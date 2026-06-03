@@ -1,65 +1,86 @@
-# 项目上下文
+# 帮助中心文档维护助手
 
-### 版本技术栈
+## 项目概览
+
+AI 驱动的帮助中心文档维护工具。用户输入新功能描述后，AI 自动检索帮助中心内需要更新的文档，并以抽屉式界面标注出需删除和需新增的内容。
+
+## 技术栈
 
 - **Framework**: Next.js 16 (App Router)
 - **Core**: React 19
 - **Language**: TypeScript 5
 - **UI 组件**: shadcn/ui (基于 Radix UI)
 - **Styling**: Tailwind CSS 4
+- **AI**: coze-coding-dev-sdk (LLM 流式输出)
+- **Model**: doubao-seed-2-0-pro-260215
 
 ## 目录结构
 
 ```
-├── public/                 # 静态资源
-├── scripts/                # 构建与启动脚本
-│   ├── build.sh            # 构建脚本
-│   ├── dev.sh              # 开发环境启动脚本
-│   ├── prepare.sh          # 预处理脚本
-│   └── start.sh            # 生产环境启动脚本
 ├── src/
-│   ├── app/                # 页面路由与布局
-│   ├── components/ui/      # Shadcn UI 组件库
-│   ├── hooks/              # 自定义 Hooks
-│   ├── lib/                # 工具库
-│   │   └── utils.ts        # 通用工具函数 (cn)
-│   └── server.ts           # 自定义服务端入口
-├── next.config.ts          # Next.js 配置
-├── package.json            # 项目依赖管理
-└── tsconfig.json           # TypeScript 配置
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── analyze/route.ts     # AI 分析接口 (SSE 流式)
+│   │   │   └── documents/route.ts   # 文档数据接口
+│   │   ├── layout.tsx               # 根布局
+│   │   ├── page.tsx                 # 主页面 (客户端组件)
+│   │   └── globals.css              # 全局样式
+│   ├── components/ui/              # shadcn/ui 组件库
+│   └── lib/
+│       ├── documents.ts             # 帮助中心文档数据
+│       └── utils.ts                 # 工具函数
+├── DESIGN.md                        # 设计规范
+└── AGENTS.md                        # 本文件
 ```
 
-- 项目文件（如 app 目录、pages 目录、components 等）默认初始化到 `src/` 目录下。
+## 构建与测试命令
 
-## 包管理规范
+- 开发: `pnpm dev`
+- 构建: `pnpm build`
+- 类型检查: `pnpm ts-check`
+- Lint: `pnpm lint`
+- 生产启动: `pnpm start`
 
-**仅允许使用 pnpm** 作为包管理器，**严禁使用 npm 或 yarn**。
-**常用命令**：
-- 安装依赖：`pnpm add <package>`
-- 安装开发依赖：`pnpm add -D <package>`
-- 安装所有依赖：`pnpm install`
-- 移除依赖：`pnpm remove <package>`
+## 核心功能
 
-## 开发规范
+1. **文档数据管理**: `src/lib/documents.ts` 中定义了8篇帮助中心文档
+2. **AI 分析接口**: `/api/analyze` 接收新功能描述，通过 SSE 流式返回受影响的文档及修改建议
+3. **文档查询接口**: `/api/documents` 提供文档列表和详情查询
+4. **抽屉式 UI**: 点击受影响文档卡片，右侧抽屉展示完整文档内容，用红色标注删除、绿色标注新增
 
-### 编码规范
+## API 接口
 
-- 默认按 TypeScript `strict` 心智写代码；优先复用当前作用域已声明的变量、函数、类型和导入，禁止引用未声明标识符或拼错变量名。
-- 禁止隐式 `any` 和 `as any`；函数参数、返回值、解构项、事件对象、`catch` 错误在使用前应有明确类型或先完成类型收窄，并清理未使用的变量和导入。
+### GET /api/documents
+返回所有文档摘要列表
 
-### next.config 配置规范
+### POST /api/documents
+请求体: `{ "id": "doc-001" }`
+返回指定文档的完整内容
 
-- 配置的路径不要写死绝对路径，必须使用 path.resolve(__dirname, ...)、import.meta.dirname 或 process.cwd() 动态拼接。
+### POST /api/analyze
+请求体: `{ "feature": "新功能描述" }`
+返回 SSE 流，最终 JSON 结构:
+```json
+{
+  "affectedDocs": [{
+    "docId": "doc-001",
+    "docName": "文档标题",
+    "reason": "修改原因",
+    "changes": [{
+      "type": "delete|add",
+      "originalText": "需删除的原文",
+      "newContent": "需新增的内容",
+      "position": "after|before|replace",
+      "referenceText": "定位参考文本",
+      "reason": "变更原因"
+    }]
+  }]
+}
+```
 
-### Hydration 问题防范
+## 编码规范
 
-1. 严禁在 JSX 渲染逻辑中直接使用 typeof window、Date.now()、Math.random() 等动态数据。**必须使用 'use client' 并配合 useEffect + useState 确保动态内容仅在客户端挂载后渲染**；同时严禁非法 HTML 嵌套（如 <p> 嵌套 <div>）。
-2. **禁止使用 head 标签**，优先使用 metadata，详见文档：https://nextjs.org/docs/app/api-reference/functions/generate-metadata
-   1. 三方 CSS、字体等资源可在 `globals.css` 中顶部通过 `@import` 引入或使用 next/font
-   2. preload, preconnect, dns-prefetch 通过 ReactDOM 的 preload、preconnect、dns-prefetch 方法引入
-   3. json-ld 可阅读 https://nextjs.org/docs/app/guides/json-ld
-
-## UI 设计与组件规范 (UI & Styling Standards)
-
-- 模板默认预装核心组件库 `shadcn/ui`，位于`src/components/ui/`目录下
-- Next.js 项目**必须默认**采用 shadcn/ui 组件、风格和规范，**除非用户指定用其他的组件和规范。**
+- 严格 TypeScript，禁止隐式 any
+- 仅使用 pnpm 管理依赖
+- 后端 LLM 调用必须使用 coze-coding-dev-sdk，不得使用 Mock
+- 流式输出优先：AI 分析必须走 SSE 流式
