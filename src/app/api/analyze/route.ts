@@ -1,11 +1,11 @@
 import { NextRequest } from "next/server";
 import { LLMClient, Config, HeaderUtils } from "coze-coding-dev-sdk";
-import { helpDocuments } from "@/lib/documents";
+import { helpDocuments, type HelpDocument } from "@/lib/documents";
 
 export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
-  const { feature } = await request.json();
+  const { feature, documents } = await request.json();
 
   if (!feature || typeof feature !== "string" || feature.trim().length === 0) {
     return new Response(JSON.stringify({ error: "请输入新功能描述" }), {
@@ -14,16 +14,32 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  const customDocuments = Array.isArray(documents)
+    ? documents.filter((doc): doc is HelpDocument => {
+        return (
+          doc &&
+          typeof doc.id === "string" &&
+          typeof doc.title === "string" &&
+          typeof doc.category === "string" &&
+          typeof doc.lastUpdated === "string" &&
+          typeof doc.content === "string" &&
+          doc.content.trim().length > 0
+        );
+      })
+    : [];
+
+  const searchableDocuments = customDocuments.length > 0 ? customDocuments : helpDocuments;
+
   const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
   const config = new Config();
   const client = new LLMClient(config, customHeaders);
 
-  // 构建文档摘要，让 LLM 知道所有文档
-  const docSummaries = helpDocuments
-    .map((doc) => `【文档ID: ${doc.id}】【标题: ${doc.title}】【分类: ${doc.category}】\n内容:\n${doc.content}`)
+  // 构建文档摘要，让 LLM 只在当前帮助中心文档集合中检索
+  const docSummaries = searchableDocuments
+    .map((doc) => `​:codex-terminal-citation[codex-terminal-citation]{line_range_start=5 line_range_end=8 terminal_chunk_id=文档ID: ${doc.id}】【标题: ${doc.title}】【分类: ${doc.category}】【更新时间: ${doc.lastUpdated}】\n内容:\n${doc.content}`)
     .join("\n\n---\n\n");
 
-  const systemPrompt = `你是一个帮助中心文档维护专家。你的任务是根据用户输入的新功能描述，分析帮助中心中哪些文档需要更新，并给出具体的修改建议。
+  const systemPrompt = `你是一个帮助中心文档维护专家。你的任务是根据用户输入的新功能描述，只在用户当前提供的帮助中心文档集合中检索哪些文档需要更新，并给出具体的修改建议。
 
 你必须严格按照以下JSON格式返回结果，不要包含任何其他文字说明：
 
@@ -58,9 +74,10 @@ export async function POST(request: NextRequest) {
 4. referenceText 用于定位新增内容的位置
 5. 如果某个文档不需要修改，不要包含在结果中
 6. 请仔细分析每个文档，确保修改建议合理且必要
-7. 新增内容应该与原文档风格保持一致`;
+7. 新增内容应该与原文档风格保持一致
+8. docId 和 docName 必须来自上方提供的帮助中心文档，不要编造文档`;
 
-  const userPrompt = `以下是目前帮助中心的所有文档：
+  const userPrompt = `以下是当前帮助中心内可检索的所有文档：
 
 ${docSummaries}
 
@@ -70,7 +87,7 @@ ${docSummaries}
 
 ${feature}
 
-请分析哪些帮助中心文档需要更新，并给出具体的修改建议。只返回需要修改的文档，以JSON格式返回。`;
+请只基于上述帮助中心文档分析哪些文档需要更新，并给出具体的修改建议。只返回需要修改的文档，以JSON格式返回。`;
 
   const messages = [
     { role: "system" as const, content: systemPrompt },

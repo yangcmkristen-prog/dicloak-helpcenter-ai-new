@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, type ChangeEvent, type ReactNode } from "react";
 import {
   Sheet,
   SheetContent,
@@ -22,6 +22,10 @@ import {
   ChevronRight,
   Sparkles,
   AlertCircle,
+  Upload,
+  FileUp,
+  CheckCircle2,
+  Link as LinkIcon,
 } from "lucide-react";
 
 // Types
@@ -47,6 +51,154 @@ interface DocDetail {
   category: string;
   lastUpdated: string;
   content: string;
+  sourceUrl?: string;
+  htmlContent?: string;
+  language?: "zh" | "en" | "unknown";
+}
+
+type ActiveTab = "help-center" | "analyze";
+
+const STORAGE_KEY = "dicloak-helpcenter-uploaded-docs";
+const SUPPORTED_FILE_EXTENSIONS = [".md", ".txt"];
+
+function isSupportedHelpDocument(file: File) {
+  const lowerName = file.name.toLowerCase();
+  return SUPPORTED_FILE_EXTENSIONS.some((extension) => lowerName.endsWith(extension));
+}
+
+function getDocumentTitle(fileName: string, content: string) {
+  const firstMarkdownTitle = content
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("# "));
+
+  if (firstMarkdownTitle) {
+    return firstMarkdownTitle.replace(/^#+\s*/, "").trim();
+  }
+
+  return fileName.replace(/\.(md|txt)$/i, "");
+}
+
+function formatDate(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function renderInlineFormatting(text: string) {
+  const parts: ReactNode[] = [];
+  const boldPattern = /\*\*(.*?)\*\*/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = boldPattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    parts.push(
+      <strong key={`${match.index}-${match[1]}`} className="font-semibold text-stone-900">
+        {match[1]}
+      </strong>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return parts.length > 0 ? parts : text;
+}
+
+function renderFormattedDocument(content: string) {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+
+  return (
+    <article className="space-y-3 text-stone-700">
+      {lines.map((line, index) => {
+        const trimmedLine = line.trim();
+
+        if (!trimmedLine) {
+          return <div key={index} className="h-2" />;
+        }
+
+        if (/^---+$/.test(trimmedLine)) {
+          return <hr key={index} className="my-5 border-stone-200" />;
+        }
+
+        const headingMatch = /^(#{1,4})\s+(.+)$/.exec(trimmedLine);
+        if (headingMatch) {
+          const level = headingMatch[1].length;
+          const headingText = renderInlineFormatting(headingMatch[2]);
+
+          if (level === 1) {
+            return (
+              <h1 key={index} className="mt-2 text-2xl font-semibold leading-tight tracking-tight text-stone-950">
+                {headingText}
+              </h1>
+            );
+          }
+
+          if (level === 2) {
+            return (
+              <h2 key={index} className="mt-6 text-xl font-semibold leading-snug text-stone-900">
+                {headingText}
+              </h2>
+            );
+          }
+
+          if (level === 3) {
+            return (
+              <h3 key={index} className="mt-5 text-base font-semibold leading-snug text-stone-900">
+                {headingText}
+              </h3>
+            );
+          }
+
+          return (
+            <h4 key={index} className="mt-4 text-sm font-semibold leading-snug text-stone-800">
+              {headingText}
+            </h4>
+          );
+        }
+
+        const unorderedListMatch = /^[-*]\s+(.+)$/.exec(trimmedLine);
+        if (unorderedListMatch) {
+          return (
+            <div key={index} className="flex gap-2 pl-2 text-sm leading-7">
+              <span className="mt-3 h-1.5 w-1.5 shrink-0 rounded-full bg-teal-600" />
+              <p>{renderInlineFormatting(unorderedListMatch[1])}</p>
+            </div>
+          );
+        }
+
+        const orderedListMatch = /^(\d+)\.\s+(.+)$/.exec(trimmedLine);
+        if (orderedListMatch) {
+          return (
+            <div key={index} className="flex gap-2 pl-2 text-sm leading-7">
+              <span className="min-w-5 shrink-0 font-medium text-teal-700">
+                {orderedListMatch[1]}.
+              </span>
+              <p>{renderInlineFormatting(orderedListMatch[2])}</p>
+            </div>
+          );
+        }
+
+        return (
+          <p key={index} className="text-sm leading-7 text-stone-700">
+            {renderInlineFormatting(trimmedLine)}
+          </p>
+        );
+      })}
+    </article>
+  );
+}
+
+function renderHtmlDocument(htmlContent: string) {
+  return (
+    <article
+      className="space-y-4 text-sm leading-7 text-stone-700 [&_a]:text-teal-700 [&_a]:underline [&_blockquote]:rounded-lg [&_blockquote]:border-l-4 [&_blockquote]:border-teal-500 [&_blockquote]:bg-teal-50 [&_blockquote]:px-4 [&_blockquote]:py-2 [&_h1]:mt-2 [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:tracking-tight [&_h1]:text-stone-950 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:text-stone-900 [&_h3]:mt-5 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-stone-900 [&_h4]:mt-4 [&_h4]:font-semibold [&_h4]:text-stone-800 [&_hr]:my-5 [&_hr]:border-stone-200 [&_img]:my-4 [&_img]:max-w-full [&_img]:rounded-lg [&_img]:border [&_img]:border-stone-200 [&_img]:shadow-sm [&_li]:my-1 [&_ol]:list-decimal [&_ol]:space-y-1 [&_ol]:pl-6 [&_p]:my-3 [&_strong]:font-semibold [&_strong]:text-stone-900 [&_table]:my-4 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-stone-200 [&_td]:p-2 [&_th]:border [&_th]:border-stone-200 [&_th]:bg-stone-50 [&_th]:p-2 [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-6"
+      dangerouslySetInnerHTML={{ __html: htmlContent }}
+    />
+  );
 }
 
 // Render document with highlighted changes
@@ -84,16 +236,6 @@ function renderDocumentWithChanges(
   // If no deletions found in text, show full content
   if (segments.length === 0) {
     segments.push({ type: "text", content });
-  }
-
-  // Find insertion points for additions
-  const additionMap = new Map<string, DocumentChange[]>();
-  for (const add of additions) {
-    const key = add.referenceText || "__end__";
-    if (!additionMap.has(key)) {
-      additionMap.set(key, []);
-    }
-    additionMap.get(key)!.push(add);
   }
 
   return (
@@ -198,6 +340,7 @@ function renderDocumentWithChanges(
 }
 
 export default function HomePage() {
+  const [activeTab, setActiveTab] = useState<ActiveTab>("help-center");
   const [feature, setFeature] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [affectedDocs, setAffectedDocs] = useState<AffectedDoc[]>([]);
@@ -206,9 +349,141 @@ export default function HomePage() {
   const [docDetail, setDocDetail] = useState<DocDetail | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [helpDocs, setHelpDocs] = useState<DocDetail[]>([]);
+  const [urlInput, setUrlInput] = useState("");
+  const [importingUrl, setImportingUrl] = useState(false);
+  const [previewDoc, setPreviewDoc] = useState<DocDetail | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const storedDocs = window.localStorage.getItem(STORAGE_KEY);
+      if (storedDocs) {
+        const parsedDocs = JSON.parse(storedDocs) as DocDetail[];
+        setHelpDocs(parsedDocs);
+      }
+    } catch {
+      setUploadError("本地帮助文档读取失败，请重新上传");
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(helpDocs));
+    } catch {
+      setUploadError("帮助文档保存到本地失败，请减少文档数量后重试");
+    }
+  }, [helpDocs]);
+
+  const handleFileUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(event.target.files ?? []);
+    event.target.value = "";
+
+    if (selectedFiles.length === 0) return;
+
+    setUploadError(null);
+    setUploadMessage(null);
+
+    const unsupportedFiles = selectedFiles.filter((file) => !isSupportedHelpDocument(file));
+    if (unsupportedFiles.length > 0) {
+      setUploadError(`仅支持上传 md、txt 格式：${unsupportedFiles.map((file) => file.name).join("、")}`);
+      return;
+    }
+
+    try {
+      const uploadedDocs = await Promise.all(
+        selectedFiles.map(async (file) => {
+          const content = await file.text();
+          const now = new Date();
+          return {
+            id: `upload-${file.name}-${file.lastModified}`,
+            title: getDocumentTitle(file.name, content),
+            category: file.name.toLowerCase().endsWith(".md") ? "Markdown" : "Text",
+            lastUpdated: formatDate(now),
+            content,
+          } satisfies DocDetail;
+        })
+      );
+
+      setHelpDocs((currentDocs) => {
+        const nextDocs = [...currentDocs];
+        for (const uploadedDoc of uploadedDocs) {
+          const existingIndex = nextDocs.findIndex((doc) => doc.id === uploadedDoc.id);
+          if (existingIndex >= 0) {
+            nextDocs[existingIndex] = uploadedDoc;
+          } else {
+            nextDocs.push(uploadedDoc);
+          }
+        }
+        return nextDocs;
+      });
+      setUploadMessage(`已导入 ${uploadedDocs.length} 篇帮助文档，AI 将在这些文档中检索修改建议`);
+    } catch {
+      setUploadError("文档读取失败，请确认文件内容可读取后重试");
+    }
+  }, []);
+
+  const handleImportUrl = useCallback(async () => {
+    const trimmedUrl = urlInput.trim();
+    if (!trimmedUrl) return;
+
+    setImportingUrl(true);
+    setUploadError(null);
+    setUploadMessage(null);
+
+    try {
+      const response = await fetch("/api/import-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: trimmedUrl }),
+      });
+      const data = await response.json();
+
+      if (!response.ok || !data.document) {
+        throw new Error(data.error || "链接导入失败");
+      }
+
+      const importedDoc = data.document as DocDetail;
+      setHelpDocs((currentDocs) => {
+        const nextDocs = [...currentDocs];
+        const existingIndex = nextDocs.findIndex((doc) => doc.id === importedDoc.id);
+        if (existingIndex >= 0) {
+          nextDocs[existingIndex] = importedDoc;
+        } else {
+          nextDocs.push(importedDoc);
+        }
+        return nextDocs;
+      });
+      setUrlInput("");
+      setUploadMessage(`已从链接导入《${importedDoc.title}》，AI 将在该网页文档中检索修改建议`);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "链接导入失败，请确认网页可访问后重试");
+    } finally {
+      setImportingUrl(false);
+    }
+  }, [urlInput]);
+
+  const handlePreviewDoc = useCallback((doc: DocDetail) => {
+    setPreviewDoc(doc);
+    setPreviewOpen(true);
+  }, []);
+
+  const handleRemoveDoc = useCallback((docId: string) => {
+    setHelpDocs((currentDocs) => currentDocs.filter((doc) => doc.id !== docId));
+    setAffectedDocs((currentDocs) => currentDocs.filter((doc) => doc.docId !== docId));
+    setPreviewDoc((currentDoc) => (currentDoc?.id === docId ? null : currentDoc));
+  }, []);
 
   const handleAnalyze = useCallback(async () => {
     if (!feature.trim()) return;
+
+    if (helpDocs.length === 0) {
+      setActiveTab("help-center");
+      setError("请先在「帮助中心」上传 md 或 txt 格式的帮助文档");
+      return;
+    }
 
     setAnalyzing(true);
     setAffectedDocs([]);
@@ -219,7 +494,7 @@ export default function HomePage() {
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ feature: feature.trim() }),
+        body: JSON.stringify({ feature: feature.trim(), documents: helpDocs }),
       });
 
       if (!response.ok) {
@@ -266,6 +541,7 @@ export default function HomePage() {
                   const result = JSON.parse(jsonStr);
                   if (result.affectedDocs && Array.isArray(result.affectedDocs)) {
                     setAffectedDocs(result.affectedDocs);
+                    setActiveTab("analyze");
                   }
                 } catch {
                   setError("AI 返回格式异常，请重试");
@@ -288,12 +564,19 @@ export default function HomePage() {
     } finally {
       setAnalyzing(false);
     }
-  }, [feature]);
+  }, [feature, helpDocs]);
 
   const handleDocClick = useCallback(async (doc: AffectedDoc) => {
     setSelectedDoc(doc);
     setDrawerOpen(true);
 
+    const uploadedDoc = helpDocs.find((helpDoc) => helpDoc.id === doc.docId);
+    if (uploadedDoc) {
+      setDocDetail(uploadedDoc);
+      return;
+    }
+
+    setDocDetail(null);
     try {
       const response = await fetch("/api/documents", {
         method: "POST",
@@ -307,13 +590,15 @@ export default function HomePage() {
     } catch {
       // Fallback - still show changes
     }
-  }, []);
+  }, [helpDocs]);
 
   const getChangeStats = (doc: AffectedDoc) => {
     const deletes = doc.changes.filter((c) => c.type === "delete").length;
     const adds = doc.changes.filter((c) => c.type === "add").length;
     return { deletes, adds };
   };
+
+  const totalCharacters = helpDocs.reduce((sum, doc) => sum + doc.content.length, 0);
 
   return (
     <div className="min-h-screen bg-stone-50">
@@ -329,7 +614,7 @@ export default function HomePage() {
                 帮助中心文档维护助手
               </h1>
               <p className="text-sm text-stone-500">
-                输入新功能描述，AI 自动检索并标注需要更新的文档
+                上传帮助文档并输入新功能描述，AI 自动检索并标注需要更新的文档
               </p>
             </div>
           </div>
@@ -338,159 +623,419 @@ export default function HomePage() {
 
       {/* Main Content */}
       <main className="mx-auto max-w-5xl px-6 py-8">
-        {/* Input Section */}
-        <section className="mb-8">
-          <div className="rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
-            <div className="mb-3 flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-teal-600" />
-              <span className="text-sm font-medium text-stone-700">
-                新功能描述
-              </span>
-            </div>
-            <Textarea
-              placeholder="请描述即将上线的新功能，例如：新增团队空间功能，支持创建团队空间并邀请成员加入，团队空间内可以共享项目、文档和日程..."
-              className="min-h-[140px] resize-none text-base leading-relaxed"
-              value={feature}
-              onChange={(e) => setFeature(e.target.value)}
-              disabled={analyzing}
-            />
-            <div className="mt-4 flex items-center justify-between">
-              <p className="text-xs text-stone-400">
-                描述越详细，AI 分析结果越准确
-              </p>
-              <Button
-                onClick={handleAnalyze}
-                disabled={!feature.trim() || analyzing}
-                className="bg-teal-600 hover:bg-teal-700"
-              >
-                {analyzing ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    正在分析...
-                  </>
-                ) : (
-                  <>
-                    <Search className="mr-2 h-4 w-4" />
-                    开始分析
-                  </>
-                )}
-              </Button>
-            </div>
-          </div>
-        </section>
+        {/* Navigation Tabs */}
+        <div className="mb-6 flex rounded-xl border border-stone-200 bg-white p-1 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setActiveTab("help-center")}
+            className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors ${
+              activeTab === "help-center"
+                ? "bg-teal-600 text-white shadow-sm"
+                : "text-stone-500 hover:bg-stone-50 hover:text-stone-900"
+            }`}
+          >
+            <BookOpen className="h-4 w-4" />
+            帮助中心
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("analyze")}
+            className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors ${
+              activeTab === "analyze"
+                ? "bg-teal-600 text-white shadow-sm"
+                : "text-stone-500 hover:bg-stone-50 hover:text-stone-900"
+            }`}
+          >
+            <Sparkles className="h-4 w-4" />
+            新功能分析
+          </button>
+        </div>
 
-        {/* Streaming Progress */}
-        {analyzing && streamingText && (
-          <section className="mb-8">
+        {activeTab === "help-center" && (
+          <section className="space-y-6">
             <div className="rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
-              <div className="mb-3 flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin text-teal-600" />
-                <span className="text-sm font-medium text-stone-700">
-                  AI 正在分析文档...
+              <div className="mb-4 flex items-start justify-between gap-4">
+                <div>
+                  <div className="mb-2 flex items-center gap-2">
+                    <FileUp className="h-4 w-4 text-teal-600" />
+                    <h2 className="text-base font-semibold text-stone-900">
+                      上传帮助文档
+                    </h2>
+                  </div>
+                  <p className="text-sm leading-relaxed text-stone-500">
+                    支持上传 Markdown（.md）和文本（.txt）格式。AI 分析新功能时会优先在这里上传的帮助文档中检索需要修改的内容。
+                  </p>
+                </div>
+                <Badge variant="secondary" className="shrink-0 text-xs">
+                  {helpDocs.length} 篇文档
+                </Badge>
+              </div>
+
+              <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-stone-300 bg-stone-50 px-6 py-10 text-center transition-colors hover:border-teal-300 hover:bg-teal-50/50">
+                <Upload className="mb-3 h-8 w-8 text-teal-600" />
+                <span className="text-sm font-medium text-stone-900">
+                  点击上传帮助文档
                 </span>
-              </div>
-              <ScrollArea className="h-[200px] rounded-lg bg-stone-50 p-4">
-                <pre className="whitespace-pre-wrap text-xs text-stone-500">
-                  {streamingText}
-                </pre>
-              </ScrollArea>
-            </div>
-          </section>
-        )}
+                <span className="mt-1 text-xs text-stone-400">
+                  可一次选择多个 .md / .txt 文件
+                </span>
+                <input
+                  type="file"
+                  multiple
+                  accept=".md,.txt,text/markdown,text/plain"
+                  onChange={handleFileUpload}
+                  className="sr-only"
+                />
+              </label>
 
-        {/* Error */}
-        {error && (
-          <section className="mb-8">
-            <div className="rounded-xl border border-red-200 bg-red-50 p-4">
-              <div className="flex items-center gap-2 text-red-700">
-                <AlertCircle className="h-4 w-4" />
-                <span className="text-sm font-medium">{error}</span>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* Results */}
-        {affectedDocs.length > 0 && !analyzing && (
-          <section>
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-stone-900">
-                需要更新的文档
-              </h2>
-              <Badge variant="secondary" className="text-xs">
-                共 {affectedDocs.length} 篇
-              </Badge>
-            </div>
-
-            <div className="grid gap-4">
-              {affectedDocs.map((doc) => {
-                const stats = getChangeStats(doc);
-                return (
-                  <button
-                    key={doc.docId}
-                    onClick={() => handleDocClick(doc)}
-                    className="group w-full rounded-xl border border-stone-200 bg-white p-5 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-md"
+              <div className="mt-5 rounded-xl border border-stone-200 bg-stone-50 p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <LinkIcon className="h-4 w-4 text-teal-600" />
+                  <span className="text-sm font-medium text-stone-700">
+                    或导入帮助文档链接
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    value={urlInput}
+                    onChange={(event) => setUrlInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        void handleImportUrl();
+                      }
+                    }}
+                    placeholder="https://help.dicloak.com/zh/..."
+                    disabled={importingUrl}
+                    className="min-w-0 flex-1 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm outline-none transition-colors placeholder:text-stone-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleImportUrl}
+                    disabled={!urlInput.trim() || importingUrl}
+                    className="shrink-0"
                   >
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0 flex-1">
-                        <div className="mb-2 flex items-center gap-2">
-                          <FileText className="h-4 w-4 text-stone-400" />
-                          <span className="font-medium text-stone-900">
-                            {doc.docName}
-                          </span>
-                          <Badge
-                            variant="outline"
-                            className="text-[10px] text-stone-400"
-                          >
-                            {doc.docId}
+                    {importingUrl ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        导入中
+                      </>
+                    ) : (
+                      "导入链接"
+                    )}
+                  </Button>
+                </div>
+                <p className="mt-2 text-xs text-stone-400">
+                  支持中英文帮助中心网页；不同语言 URL 会作为不同文档导入。
+                </p>
+              </div>
+
+              {uploadMessage && (
+                <div className="mt-4 flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+                  <CheckCircle2 className="h-4 w-4" />
+                  {uploadMessage}
+                </div>
+              )}
+              {uploadError && (
+                <div className="mt-4 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                  <AlertCircle className="h-4 w-4" />
+                  {uploadError}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h2 className="text-base font-semibold text-stone-900">
+                    已上传文档
+                  </h2>
+                  <p className="mt-1 text-sm text-stone-500">
+                    共 {helpDocs.length} 篇，约 {totalCharacters.toLocaleString()} 字符
+                  </p>
+                </div>
+                {helpDocs.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setActiveTab("analyze")}
+                  >
+                    去分析
+                    <ChevronRight className="ml-1 h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+
+              {helpDocs.length === 0 ? (
+                <div className="rounded-lg border border-stone-200 bg-stone-50 p-8 text-center">
+                  <FileText className="mx-auto mb-3 h-8 w-8 text-stone-300" />
+                  <p className="text-sm font-medium text-stone-500">
+                    暂无帮助文档
+                  </p>
+                  <p className="mt-1 text-xs text-stone-400">
+                    上传后，AI 会基于这些文档判断新功能影响范围
+                  </p>
+                </div>
+              ) : (
+                <div className="grid gap-3">
+                  {helpDocs.map((doc) => (
+                    <div
+                      key={doc.id}
+                      className="flex items-start justify-between gap-4 rounded-lg border border-stone-200 bg-white p-4 transition-colors hover:border-teal-200 hover:bg-teal-50/30"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => handlePreviewDoc(doc)}
+                        className="min-w-0 flex-1 text-left"
+                      >
+                        <div className="mb-1 flex items-center gap-2">
+                          <FileText className="h-4 w-4 shrink-0 text-stone-400" />
+                          <h3 className="truncate text-sm font-medium text-stone-900">
+                            {doc.title}
+                          </h3>
+                          <Badge variant="outline" className="text-[10px] text-stone-400">
+                            {doc.category}
                           </Badge>
+                          {doc.language && doc.language !== "unknown" && (
+                            <Badge variant="secondary" className="text-[10px]">
+                              {doc.language === "zh" ? "中文" : "English"}
+                            </Badge>
+                          )}
                         </div>
-                        <p className="mb-3 text-sm text-stone-500">
-                          {doc.reason}
+                        <p className="text-xs text-stone-400">
+                          {doc.content.length.toLocaleString()} 字符 · 更新于 {doc.lastUpdated} · 点击查看文档内容
+                          {doc.sourceUrl ? ` · ${doc.sourceUrl}` : ""}
                         </p>
-                        <div className="flex items-center gap-3">
-                          {stats.deletes > 0 && (
-                            <div className="flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-0.5">
-                              <Trash2 className="h-3 w-3 text-red-500" />
-                              <span className="text-xs font-medium text-red-600">
-                                删除 {stats.deletes} 处
-                              </span>
-                            </div>
-                          )}
-                          {stats.adds > 0 && (
-                            <div className="flex items-center gap-1 rounded-full bg-green-50 px-2.5 py-0.5">
-                              <Plus className="h-3 w-3 text-green-500" />
-                              <span className="text-xs font-medium text-green-600">
-                                新增 {stats.adds} 处
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      <ChevronRight className="mt-1 h-5 w-5 text-stone-300 transition-colors group-hover:text-teal-500" />
+                      </button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-red-500 hover:bg-red-50 hover:text-red-600"
+                        onClick={() => handleRemoveDoc(doc.id)}
+                      >
+                        删除
+                      </Button>
                     </div>
-                  </button>
-                );
-              })}
+                  ))}
+                </div>
+              )}
             </div>
           </section>
         )}
 
-        {/* Empty State */}
-        {!analyzing && affectedDocs.length === 0 && !error && !streamingText && (
-          <section className="py-16 text-center">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-stone-100">
-              <FileText className="h-8 w-8 text-stone-300" />
-            </div>
-            <h3 className="mb-1 text-sm font-medium text-stone-500">
-              尚未进行分析
-            </h3>
-            <p className="text-sm text-stone-400">
-              输入新功能描述后，点击「开始分析」查看需要更新的文档
-            </p>
-          </section>
+        {activeTab === "analyze" && (
+          <>
+            {/* Input Section */}
+            <section className="mb-8">
+              <div className="rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-teal-600" />
+                    <span className="text-sm font-medium text-stone-700">
+                      新功能描述
+                    </span>
+                  </div>
+                  <Badge variant="secondary" className="text-xs">
+                    检索 {helpDocs.length} 篇帮助文档
+                  </Badge>
+                </div>
+                <Textarea
+                  placeholder="请描述即将上线的新功能，例如：新增团队空间功能，支持创建团队空间并邀请成员加入，团队空间内可以共享项目、文档和日程..."
+                  className="min-h-[140px] resize-none text-base leading-relaxed"
+                  value={feature}
+                  onChange={(e) => setFeature(e.target.value)}
+                  disabled={analyzing}
+                />
+                <div className="mt-4 flex items-center justify-between">
+                  <p className="text-xs text-stone-400">
+                    描述越详细，AI 在上传帮助文档中的检索结果越准确
+                  </p>
+                  <Button
+                    onClick={handleAnalyze}
+                    disabled={!feature.trim() || analyzing || helpDocs.length === 0}
+                    className="bg-teal-600 hover:bg-teal-700"
+                  >
+                    {analyzing ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        正在分析...
+                      </>
+                    ) : (
+                      <>
+                        <Search className="mr-2 h-4 w-4" />
+                        开始分析
+                      </>
+                    )}
+                  </Button>
+                </div>
+                {helpDocs.length === 0 && (
+                  <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
+                    请先到「帮助中心」上传 md 或 txt 帮助文档，再开始新功能分析。
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Streaming Progress */}
+            {analyzing && streamingText && (
+              <section className="mb-8">
+                <div className="rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
+                  <div className="mb-3 flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin text-teal-600" />
+                    <span className="text-sm font-medium text-stone-700">
+                      AI 正在检索帮助文档...
+                    </span>
+                  </div>
+                  <ScrollArea className="h-[200px] rounded-lg bg-stone-50 p-4">
+                    <pre className="whitespace-pre-wrap text-xs text-stone-500">
+                      {streamingText}
+                    </pre>
+                  </ScrollArea>
+                </div>
+              </section>
+            )}
+
+            {/* Error */}
+            {error && (
+              <section className="mb-8">
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+                  <div className="flex items-center gap-2 text-red-700">
+                    <AlertCircle className="h-4 w-4" />
+                    <span className="text-sm font-medium">{error}</span>
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {/* Results */}
+            {affectedDocs.length > 0 && !analyzing && (
+              <section>
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="text-lg font-semibold text-stone-900">
+                    需要更新的文档
+                  </h2>
+                  <Badge variant="secondary" className="text-xs">
+                    共 {affectedDocs.length} 篇
+                  </Badge>
+                </div>
+
+                <div className="grid gap-4">
+                  {affectedDocs.map((doc) => {
+                    const stats = getChangeStats(doc);
+                    return (
+                      <button
+                        key={doc.docId}
+                        onClick={() => handleDocClick(doc)}
+                        className="group w-full rounded-xl border border-stone-200 bg-white p-5 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-md"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="min-w-0 flex-1">
+                            <div className="mb-2 flex items-center gap-2">
+                              <FileText className="h-4 w-4 text-stone-400" />
+                              <span className="font-medium text-stone-900">
+                                {doc.docName}
+                              </span>
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] text-stone-400"
+                              >
+                                {doc.docId}
+                              </Badge>
+                            </div>
+                            <p className="mb-3 text-sm text-stone-500">
+                              {doc.reason}
+                            </p>
+                            <div className="flex items-center gap-3">
+                              {stats.deletes > 0 && (
+                                <div className="flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-0.5">
+                                  <Trash2 className="h-3 w-3 text-red-500" />
+                                  <span className="text-xs font-medium text-red-600">
+                                    删除 {stats.deletes} 处
+                                  </span>
+                                </div>
+                              )}
+                              {stats.adds > 0 && (
+                                <div className="flex items-center gap-1 rounded-full bg-green-50 px-2.5 py-0.5">
+                                  <Plus className="h-3 w-3 text-green-500" />
+                                  <span className="text-xs font-medium text-green-600">
+                                    新增 {stats.adds} 处
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <ChevronRight className="mt-1 h-5 w-5 text-stone-300 transition-colors group-hover:text-teal-500" />
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
+            {/* Empty State */}
+            {!analyzing && affectedDocs.length === 0 && !error && !streamingText && (
+              <section className="py-16 text-center">
+                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-stone-100">
+                  <FileText className="h-8 w-8 text-stone-300" />
+                </div>
+                <h3 className="mb-1 text-sm font-medium text-stone-500">
+                  尚未进行分析
+                </h3>
+                <p className="text-sm text-stone-400">
+                  上传帮助文档并输入新功能描述后，点击「开始分析」查看需要更新的文档
+                </p>
+              </section>
+            )}
+          </>
         )}
       </main>
+
+      {/* Uploaded Document Preview Drawer */}
+      <Sheet open={previewOpen} onOpenChange={setPreviewOpen}>
+        <SheetContent
+          side="right"
+          className="w-[760px] max-w-[92vw] sm:max-w-[760px] overflow-hidden p-0"
+        >
+          {previewDoc && (
+            <>
+              <SheetHeader className="border-b border-stone-200 px-6 py-4">
+                <SheetTitle className="flex items-center gap-2 text-lg">
+                  <FileText className="h-5 w-5 text-teal-600" />
+                  {previewDoc.title}
+                </SheetTitle>
+                <SheetDescription className="text-left">
+                  {previewDoc.category} · {previewDoc.content.length.toLocaleString()} 字符 · 更新于 {previewDoc.lastUpdated}
+                  {previewDoc.sourceUrl && (
+                    <>
+                      {" · "}
+                      <a
+                        href={previewDoc.sourceUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-teal-700 underline underline-offset-2"
+                      >
+                        查看原网页
+                      </a>
+                    </>
+                  )}
+                </SheetDescription>
+              </SheetHeader>
+
+              <ScrollArea className="h-[calc(100vh-120px)]">
+                <div className="px-6 py-6">
+                  <div className="rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
+                    {previewDoc.htmlContent
+                      ? renderHtmlDocument(previewDoc.htmlContent)
+                      : renderFormattedDocument(previewDoc.content)}
+                  </div>
+                </div>
+              </ScrollArea>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
 
       {/* Document Detail Drawer */}
       <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
