@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
 
   // 构建文档摘要，让 LLM 只在当前帮助中心文档集合中检索
   const docSummaries = searchableDocuments
-    .map((doc) => `​:codex-terminal-citation[codex-terminal-citation]{line_range_start=5 line_range_end=8 terminal_chunk_id=文档ID: ${doc.id}】【标题: ${doc.title}】【分类: ${doc.category}】【更新时间: ${doc.lastUpdated}】\n内容:\n${doc.content}`)
+    .map((doc) => `​:codex-terminal-citation[codex-terminal-citation]{line_range_start=7 line_range_end=39 terminal_chunk_id=文档ID: ${doc.id}】【标题: ${doc.title}】【分类: ${doc.category}】【更新时间: ${doc.lastUpdated}】\n内容:\n${doc.content}`)
     .join("\n\n---\n\n");
 
   const systemPrompt = `你是一个帮助中心文档维护专家。你的任务是根据用户输入的新功能描述，只在用户当前提供的帮助中心文档集合中检索哪些文档需要更新，并给出具体的修改建议。

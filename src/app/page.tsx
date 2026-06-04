@@ -57,6 +57,7 @@ interface DocDetail {
 }
 
 type ActiveTab = "help-center" | "analyze";
+type LanguageFilter = "all" | "zh" | "en" | "unknown";
 
 const STORAGE_KEY = "dicloak-helpcenter-uploaded-docs";
 const SUPPORTED_FILE_EXTENSIONS = [".md", ".txt"];
@@ -192,6 +193,7 @@ function renderFormattedDocument(content: string) {
   );
 }
 
+
 function renderHtmlDocument(htmlContent: string) {
   return (
     <article
@@ -315,7 +317,7 @@ function renderDocumentWithChanges(
               <div
                 key={`add-after-${i}-${j}`}
                 className="my-2 rounded-md border border-green-300 bg-green-50 p-3"
-              >
+                >
                 <div className="mb-1.5 flex items-center gap-1.5">
                   <Plus className="h-3.5 w-3.5 text-green-600" />
                   <span className="text-xs font-medium text-green-700">
@@ -351,7 +353,11 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [helpDocs, setHelpDocs] = useState<DocDetail[]>([]);
   const [urlInput, setUrlInput] = useState("");
+  const [siteUrlInput, setSiteUrlInput] = useState("");
   const [importingUrl, setImportingUrl] = useState(false);
+  const [importingSite, setImportingSite] = useState(false);
+  const [docSearch, setDocSearch] = useState("");
+  const [languageFilter, setLanguageFilter] = useState<LanguageFilter>("all");
   const [previewDoc, setPreviewDoc] = useState<DocDetail | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
@@ -376,6 +382,21 @@ export default function HomePage() {
       setUploadError("帮助文档保存到本地失败，请减少文档数量后重试");
     }
   }, [helpDocs]);
+
+  const mergeHelpDocs = useCallback((incomingDocs: DocDetail[]) => {
+    setHelpDocs((currentDocs) => {
+      const nextDocs = [...currentDocs];
+      for (const incomingDoc of incomingDocs) {
+        const existingIndex = nextDocs.findIndex((doc) => doc.id === incomingDoc.id);
+        if (existingIndex >= 0) {
+          nextDocs[existingIndex] = incomingDoc;
+        } else {
+          nextDocs.push(incomingDoc);
+        }
+      }
+      return nextDocs;
+    });
+  }, []);
 
   const handleFileUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(event.target.files ?? []);
@@ -407,23 +428,13 @@ export default function HomePage() {
         })
       );
 
-      setHelpDocs((currentDocs) => {
-        const nextDocs = [...currentDocs];
-        for (const uploadedDoc of uploadedDocs) {
-          const existingIndex = nextDocs.findIndex((doc) => doc.id === uploadedDoc.id);
-          if (existingIndex >= 0) {
-            nextDocs[existingIndex] = uploadedDoc;
-          } else {
-            nextDocs.push(uploadedDoc);
-          }
-        }
-        return nextDocs;
-      });
+      mergeHelpDocs(uploadedDocs);
       setUploadMessage(`已导入 ${uploadedDocs.length} 篇帮助文档，AI 将在这些文档中检索修改建议`);
     } catch {
       setUploadError("文档读取失败，请确认文件内容可读取后重试");
     }
-  }, []);
+  }, [mergeHelpDocs]);
+
 
   const handleImportUrl = useCallback(async () => {
     const trimmedUrl = urlInput.trim();
@@ -446,16 +457,7 @@ export default function HomePage() {
       }
 
       const importedDoc = data.document as DocDetail;
-      setHelpDocs((currentDocs) => {
-        const nextDocs = [...currentDocs];
-        const existingIndex = nextDocs.findIndex((doc) => doc.id === importedDoc.id);
-        if (existingIndex >= 0) {
-          nextDocs[existingIndex] = importedDoc;
-        } else {
-          nextDocs.push(importedDoc);
-        }
-        return nextDocs;
-      });
+      mergeHelpDocs([importedDoc]);
       setUrlInput("");
       setUploadMessage(`已从链接导入《${importedDoc.title}》，AI 将在该网页文档中检索修改建议`);
     } catch (err) {
@@ -463,7 +465,41 @@ export default function HomePage() {
     } finally {
       setImportingUrl(false);
     }
-  }, [urlInput]);
+  }, [mergeHelpDocs, urlInput]);
+
+  const handleImportSite = useCallback(async () => {
+    const trimmedUrl = siteUrlInput.trim();
+    if (!trimmedUrl) return;
+
+    setImportingSite(true);
+    setUploadError(null);
+    setUploadMessage(null);
+
+    try {
+      const response = await fetch("/api/import-site", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: trimmedUrl }),
+      });
+      const data = await response.json();
+
+      if (!response.ok || !Array.isArray(data.documents)) {
+        throw new Error(data.error || "批量导入失败");
+      }
+
+      const importedDocs = data.documents as DocDetail[];
+      mergeHelpDocs(importedDocs);
+      setSiteUrlInput("");
+      const failedCount = Array.isArray(data.failed) ? data.failed.length : 0;
+      setUploadMessage(
+        `已批量导入 ${importedDocs.length} 篇帮助文档${failedCount > 0 ? `，${failedCount} 个链接导入失败` : ""}`
+      );
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "批量导入失败，请确认帮助中心页面可访问后重试");
+    } finally {
+      setImportingSite(false);
+    }
+  }, [mergeHelpDocs, siteUrlInput]);
 
   const handlePreviewDoc = useCallback((doc: DocDetail) => {
     setPreviewDoc(doc);
@@ -599,6 +635,15 @@ export default function HomePage() {
   };
 
   const totalCharacters = helpDocs.reduce((sum, doc) => sum + doc.content.length, 0);
+  const normalizedDocSearch = docSearch.trim().toLowerCase();
+  const filteredHelpDocs = helpDocs.filter((doc) => {
+    const matchesSearch =
+      !normalizedDocSearch ||
+      doc.title.toLowerCase().includes(normalizedDocSearch) ||
+      doc.sourceUrl?.toLowerCase().includes(normalizedDocSearch);
+    const matchesLanguage = languageFilter === "all" || (doc.language || "unknown") === languageFilter;
+    return matchesSearch && matchesLanguage;
+  });
 
   return (
     <div className="min-h-screen bg-stone-50">
@@ -663,7 +708,7 @@ export default function HomePage() {
                     </h2>
                   </div>
                   <p className="text-sm leading-relaxed text-stone-500">
-                    支持上传 Markdown（.md）和文本（.txt）格式。AI 分析新功能时会优先在这里上传的帮助文档中检索需要修改的内容。
+                    支持上传 Markdown（.md）和文本（.txt）格式，也可以导入单篇或批量导入帮助中心链接。AI 分析新功能时会优先在这里的帮助文档中检索需要修改的内容。
                   </p>
                 </div>
                 <Badge variant="secondary" className="shrink-0 text-xs">
@@ -731,6 +776,49 @@ export default function HomePage() {
                 </p>
               </div>
 
+              <div className="mt-4 rounded-xl border border-stone-200 bg-stone-50 p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <BookOpen className="h-4 w-4 text-teal-600" />
+                  <span className="text-sm font-medium text-stone-700">
+                    批量导入帮助中心
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    value={siteUrlInput}
+                    onChange={(event) => setSiteUrlInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        void handleImportSite();
+                      }
+                    }}
+                    placeholder="https://help.dicloak.com/zh/"
+                    disabled={importingSite}
+                    className="min-w-0 flex-1 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm outline-none transition-colors placeholder:text-stone-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleImportSite}
+                    disabled={!siteUrlInput.trim() || importingSite}
+                    className="shrink-0"
+                  >
+                    {importingSite ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        批量导入中
+                      </>
+                    ) : (
+                      "批量导入"
+                    )}
+                  </Button>
+                </div>
+                <p className="mt-2 text-xs text-stone-400">
+                  输入 https://help.dicloak.com/zh/ 或英文入口，系统会扫描同语言路径下的文档链接并导入。
+                </p>
+              </div>
+
               {uploadMessage && (
                 <div className="mt-4 flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-700">
                   <CheckCircle2 className="h-4 w-4" />
@@ -767,6 +855,31 @@ export default function HomePage() {
                 )}
               </div>
 
+              {helpDocs.length > 0 && (
+                <div className="mb-4 grid gap-3 rounded-lg border border-stone-200 bg-stone-50 p-4 sm:grid-cols-[1fr_auto]">
+                  <input
+                    type="search"
+                    value={docSearch}
+                    onChange={(event) => setDocSearch(event.target.value)}
+                    placeholder="按文档名称或链接搜索"
+                    className="min-w-0 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm outline-none transition-colors placeholder:text-stone-400 focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                  />
+                  <select
+                    value={languageFilter}
+                    onChange={(event) => setLanguageFilter(event.target.value as LanguageFilter)}
+                    className="rounded-md border border-stone-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none transition-colors focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                  >
+                    <option value="all">全部语言</option>
+                    <option value="zh">中文</option>
+                    <option value="en">English</option>
+                    <option value="unknown">未知语言</option>
+                  </select>
+                  <p className="text-xs text-stone-400 sm:col-span-2">
+                    当前显示 {filteredHelpDocs.length} / {helpDocs.length} 篇文档
+                  </p>
+                </div>
+              )}
+
               {helpDocs.length === 0 ? (
                 <div className="rounded-lg border border-stone-200 bg-stone-50 p-8 text-center">
                   <FileText className="mx-auto mb-3 h-8 w-8 text-stone-300" />
@@ -777,9 +890,19 @@ export default function HomePage() {
                     上传后，AI 会基于这些文档判断新功能影响范围
                   </p>
                 </div>
+              ) : filteredHelpDocs.length === 0 ? (
+                <div className="rounded-lg border border-stone-200 bg-stone-50 p-8 text-center">
+                  <FileText className="mx-auto mb-3 h-8 w-8 text-stone-300" />
+                  <p className="text-sm font-medium text-stone-500">
+                    没有匹配的文档
+                  </p>
+                  <p className="mt-1 text-xs text-stone-400">
+                    请调整搜索关键词或语言筛选条件
+                  </p>
+                </div>
               ) : (
                 <div className="grid gap-3">
-                  {helpDocs.map((doc) => (
+                  {filteredHelpDocs.map((doc) => (
                     <div
                       key={doc.id}
                       className="flex items-start justify-between gap-4 rounded-lg border border-stone-200 bg-white p-4 transition-colors hover:border-teal-200 hover:bg-teal-50/30"
