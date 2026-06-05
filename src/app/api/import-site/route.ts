@@ -11,7 +11,7 @@ export const maxDuration = 120;
 
 const MAX_DISCOVERED_LINKS = 1000;
 const MAX_CRAWL_PAGES = 500;
-const MAX_IMPORTED_DOCUMENTS = 240;
+const MAX_IMPORTED_DOCUMENTS = 250;
 
 function getLanguagePrefix(url: URL) {
   const match = /^\/(zh|en)(\/|$)/i.exec(url.pathname);
@@ -32,12 +32,21 @@ function safeParseHttpUrl(url: string) {
     return null;
   }
 }
+function hasPathPrefix(path: string, prefix: string) {
+  return path === prefix || path.startsWith(`${prefix}/`);
+}
 
 function isSameLanguageHelpUrl(url: URL, seedUrl: URL, languagePrefix: string | null) {
   if (url.origin !== seedUrl.origin) return false;
-  if (languagePrefix && !url.pathname.toLowerCase().startsWith(languagePrefix)) return false;
 
-  const path = url.pathname.toLowerCase();
+  const path = url.pathname.toLowerCase().replace(/\/$/, "") || "/";
+  if (languagePrefix) {
+    const normalizedPrefix = languagePrefix.replace(/\/$/, "");
+    if (!hasPathPrefix(path, normalizedPrefix)) return false;
+  } else if (hasPathPrefix(path, "/zh") || hasPathPrefix(path, "/vn")) {
+    return false;
+  }
+
   if (/\.(png|jpe?g|gif|webp|svg|pdf|zip|rar|7z|css|js|ico|xml|json|mp4|mov|avi)$/i.test(path)) {
     return false;
   }

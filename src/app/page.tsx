@@ -61,6 +61,7 @@ type LanguageFilter = "all" | "zh" | "en" | "unknown";
 
 const STORAGE_KEY = "dicloak-helpcenter-uploaded-docs";
 const SUPPORTED_FILE_EXTENSIONS = [".md", ".txt"];
+const DOCS_PER_PAGE = 10;
 
 function isSupportedHelpDocument(file: File) {
   const lowerName = file.name.toLowerCase();
@@ -358,6 +359,7 @@ export default function HomePage() {
   const [importingSite, setImportingSite] = useState(false);
   const [docSearch, setDocSearch] = useState("");
   const [languageFilter, setLanguageFilter] = useState<LanguageFilter>("all");
+  const [docsPage, setDocsPage] = useState(1);
   const [previewDoc, setPreviewDoc] = useState<DocDetail | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
@@ -646,6 +648,20 @@ export default function HomePage() {
     const matchesLanguage = languageFilter === "all" || (doc.language || "unknown") === languageFilter;
     return matchesSearch && matchesLanguage;
   });
+  const totalDocPages = Math.max(1, Math.ceil(filteredHelpDocs.length / DOCS_PER_PAGE));
+  const currentDocsPage = Math.min(docsPage, totalDocPages);
+  const paginatedHelpDocs = filteredHelpDocs.slice(
+    (currentDocsPage - 1) * DOCS_PER_PAGE,
+    currentDocsPage * DOCS_PER_PAGE
+  );
+
+  useEffect(() => {
+    setDocsPage(1);
+  }, [docSearch, languageFilter]);
+
+  useEffect(() => {
+    setDocsPage((currentPage) => Math.min(currentPage, Math.max(1, Math.ceil(filteredHelpDocs.length / DOCS_PER_PAGE))));
+  }, [filteredHelpDocs.length]);
 
   return (
     <div className="min-h-screen bg-stone-50">
@@ -877,7 +893,7 @@ export default function HomePage() {
                     <option value="unknown">未知语言</option>
                   </select>
                   <p className="text-xs text-stone-400 sm:col-span-2">
-                    当前显示 {filteredHelpDocs.length} / {helpDocs.length} 篇文档
+                    当前显示 {filteredHelpDocs.length} / {helpDocs.length} 篇文档，每页 10 条
                   </p>
                 </div>
               )}
@@ -904,17 +920,17 @@ export default function HomePage() {
                 </div>
               ) : (
                 <div className="grid gap-3">
-                  {filteredHelpDocs.map((doc) => (
+                  {paginatedHelpDocs.map((doc) => (
                     <div
                       key={doc.id}
-                      className="flex max-w-full items-start justify-between gap-4 rounded-lg border border-stone-200 bg-white p-4 transition-colors hover:border-teal-200 hover:bg-teal-50/30"
+                      className="grid max-w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-3 overflow-hidden rounded-lg border border-stone-200 bg-white p-4 transition-colors hover:border-teal-200 hover:bg-teal-50/30"
                     >
                       <button
                         type="button"
                         onClick={() => handlePreviewDoc(doc)}
                         className="min-w-0 flex-1 overflow-hidden text-left"
                       >
-                        <div className="mb-1 flex items-center gap-2">
+                        <div className="mb-1 flex min-w-0 items-center gap-2">
                           <FileText className="h-4 w-4 shrink-0 text-stone-400" />
                           <h3 className="min-w-0 flex-1 truncate text-sm font-medium text-stone-900">
                             {doc.title}
@@ -930,7 +946,7 @@ export default function HomePage() {
                         </div>
                         <p
                           className="truncate text-xs text-stone-400"
-                          title={doc.sourceUrl ? `${doc.content.length.toLocaleString()} 字符 · 更新于 ${doc.lastUpdated} · 点击查看文档内容 · ${doc.sourceUrl}` : undefined}
+                          title={doc.sourceUrl || undefined}
                         >
                           {doc.content.length.toLocaleString()} 字符 · 更新于 {doc.lastUpdated} · 点击查看文档内容
                           {doc.sourceUrl ? ` · ${doc.sourceUrl}` : ""}
@@ -946,6 +962,34 @@ export default function HomePage() {
                       </Button>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {filteredHelpDocs.length > DOCS_PER_PAGE && (
+                <div className="mt-4 flex flex-col gap-3 rounded-lg border border-stone-200 bg-stone-50 p-3 text-sm text-stone-600 sm:flex-row sm:items-center sm:justify-between">
+                  <span>
+                    第 {currentDocsPage} / {totalDocPages} 页 · 每页 10 条
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setDocsPage((page) => Math.max(1, page - 1))}
+                      disabled={currentDocsPage <= 1}
+                    >
+                      上一页
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setDocsPage((page) => Math.min(totalDocPages, page + 1))}
+                      disabled={currentDocsPage >= totalDocPages}
+                    >
+                      下一页
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>
@@ -976,8 +1020,8 @@ export default function HomePage() {
                   disabled={analyzing}
                 />
                 <div className="mt-4 flex items-center justify-between">
-                  <p className="text-xs text-stone-400">
-                    描述越详细，AI 在上传帮助文档中的检索结果越准确
+                  <p className="text-sm text-stone-500">
+                    AI 会在已上传的帮助文档中检索需要修改的内容
                   </p>
                   <Button
                     onClick={handleAnalyze}

@@ -35,9 +35,22 @@ export function getFirstMatch(html: string, patterns: RegExp[]) {
   return "";
 }
 
+function hasPathPrefix(path: string, prefix: string) {
+  const normalizedPath = path.toLowerCase().replace(/\/$/, "") || "/";
+  return normalizedPath === prefix || normalizedPath.startsWith(`${prefix}/`);
+}
+
+function isDicloakEnglishHelpPath(url: URL) {
+  if (url.hostname.toLowerCase() !== "help.dicloak.com") return false;
+
+  return !hasPathPrefix(url.pathname, "/zh") && !hasPathPrefix(url.pathname, "/vn");
+}
+
 export function extractLanguage(url: URL, html: string): "zh" | "en" | "unknown" {
-  if (/\/zh(\/|$)/i.test(url.pathname)) return "zh";
-  if (/\/en(\/|$)/i.test(url.pathname)) return "en";
+  if (hasPathPrefix(url.pathname, "/zh")) return "zh";
+  if (hasPathPrefix(url.pathname, "/vn")) return "unknown";
+  if (hasPathPrefix(url.pathname, "/en")) return "en";
+  if (isDicloakEnglishHelpPath(url)) return "en";
 
   const htmlLang = getFirstMatch(html, [/<html[^>]*\slang=["']?([^"'\s>]+)["']?/i]);
   if (htmlLang.toLowerCase().startsWith("zh")) return "zh";
