@@ -1,26 +1,44 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  buildHelpDocumentFromHtml,
   extractLanguage,
   extractPageLinks,
   fetchHtml,
-  importHelpDocument,
   parseHttpUrl,
 } from "@/lib/import-help-document";
 
-const MAX_DISCOVERED_LINKS = 240;
-const MAX_IMPORTED_DOCUMENTS = 120;
+export const maxDuration = 120;
+
+const MAX_DISCOVERED_LINKS = 1000;
+const MAX_CRAWL_PAGES = 500;
+const MAX_IMPORTED_DOCUMENTS = 240;
 
 function getLanguagePrefix(url: URL) {
   const match = /^\/(zh|en)(\/|$)/i.exec(url.pathname);
   return match ? `/${match[1].toLowerCase()}/` : null;
 }
 
-function isLikelyDocumentUrl(url: URL, seedUrl: URL, languagePrefix: string | null) {
+function normalizeUrl(url: URL) {
+  const normalizedUrl = new URL(url.toString());
+  normalizedUrl.hash = "";
+  normalizedUrl.search = "";
+  return normalizedUrl;
+}
+
+function safeParseHttpUrl(url: string) {
+  try {
+    return normalizeUrl(parseHttpUrl(url));
+  } catch {
+    return null;
+  }
+}
+
+function isSameLanguageHelpUrl(url: URL, seedUrl: URL, languagePrefix: string | null) {
   if (url.origin !== seedUrl.origin) return false;
   if (languagePrefix && !url.pathname.toLowerCase().startsWith(languagePrefix)) return false;
 
   const path = url.pathname.toLowerCase();
-  if (/\.(png|jpe?g|gif|webp|svg|pdf|zip|rar|7z|css|js|ico|xml|json)$/i.test(path)) {
+  if (/\.(png|jpe?g|gif|webp|svg|pdf|zip|rar|7z|css|js|ico|xml|json|mp4|mov|avi)$/i.test(path)) {
     return false;
   }
   if (path.includes("/wp-admin") || path.includes("/wp-json") || path.includes("/feed")) {
@@ -28,6 +46,22 @@ function isLikelyDocumentUrl(url: URL, seedUrl: URL, languagePrefix: string | nu
   }
 
   return path.split("/").filter(Boolean).length >= (languagePrefix ? 2 : 1);
+}
+
+function isDirectoryOrPaginationUrl(url: URL) {
+  const parts = url.pathname.toLowerCase().split("/").filter(Boolean);
+  return parts.some((part) => ["category", "tag", "author", "page", "search"].includes(part));
+}
+
+function isLikelyArticlePage(url: URL, seedUrl: URL, html: string) {
+  if (normalizeUrl(url).toString() === normalizeUrl(seedUrl).toString()) return false;
+  if (isDirectoryOrPaginationUrl(url)) return false;
+
+  const hasTitle = /<h1\b[\s\S]*?<\/h1>/i.test(html) || /<meta[^>]*property=["']og:title["'][^>]*>/i.test(html);
+  const hasArticleContainer = /<article\b/i.test(html) || /\b(?:class|id)=["'][^"']*(?:post|entry|article|single)[^"']*["']/i.test(html);
+  const hasArticleMeta = /by\s+DICloak/i.test(html) || /(?:published|updated|post-\d+|作者|发布日期|更新时间)/i.test(html);
+
+  return hasTitle && (hasArticleContainer || hasArticleMeta);
 }
 
 export async function POST(request: NextRequest) {
@@ -38,30 +72,72 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const seedUrl = parseHttpUrl(url);
+    const seedUrl = normalizeUrl(parseHttpUrl(url));
     const languagePrefix = getLanguagePrefix(seedUrl);
-    const seedHtml = await fetchHtml(seedUrl);
-    const seedLanguage = extractLanguage(seedUrl, seedHtml);
-    const discoveredLinks = extractPageLinks(seedHtml, seedUrl)
-      .map((link) => parseHttpUrl(link))
-      .filter((link) => isLikelyDocumentUrl(link, seedUrl, languagePrefix))
-      .slice(0, MAX_DISCOVERED_LINKS);
-
-    const uniqueLinks = Array.from(new Map(discoveredLinks.map((link) => [link.toString(), link])).values());
+    const queuedUrls = new Set<string>([seedUrl.toString()]);
+    const crawledUrls = new Set<string>();
+    const importedUrlKeys = new Set<string>();
+    const queue: URL[] = [seedUrl];
     const documents = [];
     const failed: { url: string; reason: string }[] = [];
+    let discoveredCount = 1;
+    let seedLanguage: "zh" | "en" | "unknown" = "unknown";
 
-    for (const link of uniqueLinks.slice(0, MAX_IMPORTED_DOCUMENTS)) {
+    while (queue.length > 0 && crawledUrls.size < MAX_CRAWL_PAGES && documents.length < MAX_IMPORTED_DOCUMENTS) {
+      const currentUrl = queue.shift();
+      if (!currentUrl) break;
+
+      const currentKey = currentUrl.toString();
+      if (crawledUrls.has(currentKey)) continue;
+
+      let html = "";
       try {
-        const document = await importHelpDocument(link);
+        html = await fetchHtml(currentUrl);
+      } catch (error) {
+        failed.push({
+          url: currentKey,
+          reason: error instanceof Error ? error.message : "网页获取失败",
+        });
+        crawledUrls.add(currentKey);
+        continue;
+      }
+
+      crawledUrls.add(currentKey);
+      if (currentKey === seedUrl.toString()) {
+        seedLanguage = extractLanguage(currentUrl, html);
+      }
+
+      const pageLinks = extractPageLinks(html, currentUrl)
+        .map((link) => safeParseHttpUrl(link))
+        .filter((link): link is URL => Boolean(link))
+        .filter((link) => isSameLanguageHelpUrl(link, seedUrl, languagePrefix));
+
+      for (const link of pageLinks) {
+        const linkKey = link.toString();
+        if (!queuedUrls.has(linkKey) && queuedUrls.size < MAX_DISCOVERED_LINKS) {
+          queuedUrls.add(linkKey);
+          queue.push(link);
+          discoveredCount += 1;
+        }
+      }
+
+      if (!isLikelyArticlePage(currentUrl, seedUrl, html)) {
+        continue;
+      }
+
+      try {
+        const document = buildHelpDocumentFromHtml(currentUrl, html);
         if (seedLanguage === "zh" || seedLanguage === "en") {
           document.language = document.language === "unknown" ? seedLanguage : document.language;
           document.category = document.language === "en" ? "Web Page" : "网页";
         }
-        documents.push(document);
+        if (!importedUrlKeys.has(document.sourceUrl)) {
+          documents.push(document);
+          importedUrlKeys.add(document.sourceUrl);
+        }
       } catch (error) {
         failed.push({
-          url: link.toString(),
+          url: currentKey,
           reason: error instanceof Error ? error.message : "导入失败",
         });
       }
@@ -72,6 +148,8 @@ export async function POST(request: NextRequest) {
         {
           error: "未能从该帮助中心页面导入有效文档，请确认链接是帮助中心首页或包含文档导航的页面",
           failed,
+          crawledCount: crawledUrls.size,
+          discoveredCount,
         },
         { status: 422 }
       );
@@ -80,9 +158,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       documents,
       failed,
-      discoveredCount: uniqueLinks.length,
+      discoveredCount,
+      crawledCount: crawledUrls.size,
       importedCount: documents.length,
-      limited: uniqueLinks.length > MAX_IMPORTED_DOCUMENTS,
+      limited: queue.length > 0 || queuedUrls.size >= MAX_DISCOVERED_LINKS || documents.length >= MAX_IMPORTED_DOCUMENTS,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "批量导入失败，请确认网页可访问后重试";

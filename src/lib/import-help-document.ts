@@ -172,8 +172,7 @@ export async function fetchHtml(url: URL) {
   }
 }
 
-export async function importHelpDocument(url: URL): Promise<ImportedHelpDocument> {
-  const html = await fetchHtml(url);
+export function buildHelpDocumentFromHtml(url: URL, html: string): ImportedHelpDocument {
   const articleHtml = extractArticleHtml(html);
   const htmlContent = sanitizeArticleHtml(articleHtml, url.toString());
   const markdownContent = htmlToMarkdown(htmlContent);
@@ -200,6 +199,11 @@ export async function importHelpDocument(url: URL): Promise<ImportedHelpDocument
     htmlContent,
     language,
   };
+}
+
+export async function importHelpDocument(url: URL): Promise<ImportedHelpDocument> {
+  const html = await fetchHtml(url);
+  return buildHelpDocumentFromHtml(url, html);
 }
 
 export function extractPageLinks(html: string, baseUrl: URL) {
