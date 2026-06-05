@@ -59,7 +59,6 @@ interface DocDetail {
 type ActiveTab = "help-center" | "analyze";
 type LanguageFilter = "all" | "zh" | "en" | "unknown";
 
-const STORAGE_KEY = "dicloak-helpcenter-uploaded-docs";
 const SUPPORTED_FILE_EXTENSIONS = [".md", ".txt"];
 const DOCS_PER_PAGE = 10;
 
@@ -365,25 +364,60 @@ export default function HomePage() {
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
+  const [syncing, setSyncing] = useState(false);
+
+  // 从 Supabase 加载文档
   useEffect(() => {
-    try {
-      const storedDocs = window.localStorage.getItem(STORAGE_KEY);
-      if (storedDocs) {
-        const parsedDocs = JSON.parse(storedDocs) as DocDetail[];
-        setHelpDocs(parsedDocs);
+    async function loadDocs() {
+      try {
+        setSyncing(true);
+        const response = await fetch("/api/docs");
+        const data = await response.json();
+        if (data.documents && Array.isArray(data.documents)) {
+          const docs: DocDetail[] = data.documents.map((doc: Record<string, unknown>) => ({
+            id: doc.id as string,
+            title: doc.title as string,
+            category: (doc.category as string) || "未分类",
+            lastUpdated: (doc.last_updated as string) || "",
+            content: doc.content as string || "",
+            sourceUrl: (doc.source_url as string) || undefined,
+            htmlContent: (doc.html_content as string) || undefined,
+            language: (doc.language as "zh" | "en" | "unknown") || "unknown",
+          }));
+          setHelpDocs(docs);
+        }
+      } catch {
+        setUploadError("文档同步失败，请刷新页面重试");
+      } finally {
+        setSyncing(false);
       }
-    } catch {
-      setUploadError("本地帮助文档读取失败，请重新上传");
     }
+    loadDocs();
   }, []);
 
-  useEffect(() => {
+  // 同步文档到 Supabase（合并：新增或更新）
+  const syncDocsToSupabase = useCallback(async (docs: DocDetail[]) => {
+    if (docs.length === 0) return;
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(helpDocs));
+      const rows = docs.map((doc) => ({
+        id: doc.id,
+        title: doc.title,
+        category: doc.category || "未分类",
+        last_updated: doc.lastUpdated || new Date().toISOString().split("T")[0],
+        content: doc.content,
+        source_url: doc.sourceUrl || null,
+        html_content: doc.htmlContent || null,
+        language: doc.language || "unknown",
+      }));
+      await fetch("/api/docs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(rows),
+      });
     } catch {
-      setUploadError("帮助文档保存到本地失败，请减少文档数量后重试");
+      setUploadError("文档同步到云端失败，请检查网络连接");
     }
-  }, [helpDocs]);
+  }, []);
 
   const mergeHelpDocs = useCallback((incomingDocs: DocDetail[]) => {
     setHelpDocs((currentDocs) => {
@@ -398,7 +432,9 @@ export default function HomePage() {
       }
       return nextDocs;
     });
-  }, []);
+    // 同步到 Supabase
+    syncDocsToSupabase(incomingDocs);
+  }, [syncDocsToSupabase]);
 
   const handleFileUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(event.target.files ?? []);
@@ -510,10 +546,20 @@ export default function HomePage() {
     setPreviewOpen(true);
   }, []);
 
-  const handleRemoveDoc = useCallback((docId: string) => {
+  const handleRemoveDoc = useCallback(async (docId: string) => {
     setHelpDocs((currentDocs) => currentDocs.filter((doc) => doc.id !== docId));
     setAffectedDocs((currentDocs) => currentDocs.filter((doc) => doc.docId !== docId));
     setPreviewDoc((currentDoc) => (currentDoc?.id === docId ? null : currentDoc));
+    // 从 Supabase 删除
+    try {
+      await fetch("/api/docs", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: docId }),
+      });
+    } catch {
+      // 本地已删除，云端删除失败可忽略（下次加载时会同步）
+    }
   }, []);
 
   const handleAnalyze = useCallback(async () => {
