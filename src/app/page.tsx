@@ -54,6 +54,7 @@ interface DocDetail {
   sourceUrl?: string;
   htmlContent?: string;
   language?: "zh" | "en" | "unknown";
+  linkedDocId?: string;
 }
 
 interface RetrievalStats {
@@ -89,6 +90,12 @@ function getDocumentTitle(fileName: string, content: string) {
 
 function formatDate(date: Date) {
   return date.toISOString().slice(0, 10);
+}
+
+function removeLinkedDocId(doc: DocDetail): DocDetail {
+  const nextDoc = { ...doc };
+  delete nextDoc.linkedDocId;
+  return nextDoc;
 }
 
 function renderInlineFormatting(text: string) {
@@ -369,6 +376,10 @@ export default function HomePage() {
   const [docsPage, setDocsPage] = useState(1);
   const [previewDoc, setPreviewDoc] = useState<DocDetail | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [linkingDoc, setLinkingDoc] = useState<DocDetail | null>(null);
+  const [linkDrawerOpen, setLinkDrawerOpen] = useState(false);
+  const [linkDocSearch, setLinkDocSearch] = useState("");
+  const [linkPreviewDocId, setLinkPreviewDocId] = useState<string | null>(null);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
@@ -443,7 +454,10 @@ export default function HomePage() {
       for (const incomingDoc of incomingDocs) {
         const existingIndex = nextDocs.findIndex((doc) => doc.id === incomingDoc.id);
         if (existingIndex >= 0) {
-          nextDocs[existingIndex] = incomingDoc;
+          nextDocs[existingIndex] = {
+            ...incomingDoc,
+            linkedDocId: incomingDoc.linkedDocId ?? nextDocs[existingIndex].linkedDocId,
+          };
         } else {
           nextDocs.push(incomingDoc);
         }
@@ -564,27 +578,68 @@ export default function HomePage() {
     setPreviewOpen(true);
   }, []);
 
-  const handleRemoveDoc = useCallback(async (docId: string) => {
-    setHelpDocs((currentDocs) => currentDocs.filter((doc) => doc.id !== docId));
+  const handleOpenLinkDrawer = useCallback((doc: DocDetail) => {
+    setLinkingDoc(doc);
+    setLinkDocSearch("");
+    setLinkPreviewDocId(doc.linkedDocId ?? null);
+    setLinkDrawerOpen(true);
+  }, []);
+
+  const handleLinkDocs = useCallback((targetDoc: DocDetail) => {
+    if (!linkingDoc || linkingDoc.id === targetDoc.id) return;
+
+    setHelpDocs((currentDocs) =>
+      currentDocs.map((doc) => {
+        if (doc.id === linkingDoc.id) {
+          return { ...doc, linkedDocId: targetDoc.id };
+        }
+        if (doc.id === targetDoc.id) {
+          return { ...doc, linkedDocId: linkingDoc.id };
+        }
+        if (doc.linkedDocId === linkingDoc.id || doc.linkedDocId === targetDoc.id) {
+          return removeLinkedDocId(doc);
+        }
+        return doc;
+      })
+    );
+    setUploadMessage(`已关联《${linkingDoc.title}》和《${targetDoc.title}》`);
+    setLinkDrawerOpen(false);
+    setLinkingDoc(null);
+    setLinkPreviewDocId(null);
+  }, [linkingDoc]);
+
+  const handleUnlinkDoc = useCallback((docId: string) => {
+    setHelpDocs((currentDocs) => {
+      const currentDoc = currentDocs.find((doc) => doc.id === docId);
+      const linkedDocId = currentDoc?.linkedDocId;
+
+      return currentDocs.map((doc) => {
+        if (doc.id === docId || (linkedDocId && doc.id === linkedDocId)) {
+          return removeLinkedDocId(doc);
+        }
+        return doc;
+      });
+    });
+    setUploadMessage("已取消文档关联");
+    setLinkDrawerOpen(false);
+    setLinkingDoc(null);
+    setLinkPreviewDocId(null);
+  }, []);
+
+  const handleRemoveDoc = useCallback((docId: string) => {
+    setHelpDocs((currentDocs) =>
+      currentDocs
+        .filter((doc) => doc.id !== docId)
+        .map((doc) => {
+          if (doc.linkedDocId === docId) {
+            return removeLinkedDocId(doc);
+          }
+          return doc;
+        })
+    );
     setAffectedDocs((currentDocs) => currentDocs.filter((doc) => doc.docId !== docId));
     setPreviewDoc((currentDoc) => (currentDoc?.id === docId ? null : currentDoc));
-    setSyncing(true);
-
-    try {
-      const response = await fetch("/api/docs", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: docId }),
-      });
-
-      if (!response.ok) {
-        throw new Error("云端删除失败");
-      }
-    } catch {
-      setUploadError("文档已从本地移除，但云端删除失败，请刷新后确认");
-    } finally {
-      setSyncing(false);
-    }
+    setLinkingDoc((currentDoc) => (currentDoc?.id === docId ? null : currentDoc));
   }, []);
 
   const handleAnalyze = useCallback(async () => {
@@ -734,6 +789,18 @@ export default function HomePage() {
     (currentDocsPage - 1) * DOCS_PER_PAGE,
     currentDocsPage * DOCS_PER_PAGE
   );
+
+  const normalizedLinkDocSearch = linkDocSearch.trim().toLowerCase();
+  const linkCandidateDocs = helpDocs.filter((doc) => {
+    if (!linkingDoc || doc.id === linkingDoc.id) return false;
+    return (
+      !normalizedLinkDocSearch ||
+      doc.title.toLowerCase().includes(normalizedLinkDocSearch) ||
+      doc.category.toLowerCase().includes(normalizedLinkDocSearch) ||
+      doc.sourceUrl?.toLowerCase().includes(normalizedLinkDocSearch)
+    );
+  });
+  const linkPreviewDoc = helpDocs.find((doc) => doc.id === linkPreviewDocId) ?? null;
 
   useEffect(() => {
     setDocsPage(1);
@@ -1006,48 +1073,89 @@ export default function HomePage() {
                 </div>
               ) : (
                 <div className="grid gap-3">
-                  {paginatedHelpDocs.map((doc) => (
-                    <div
-                      key={doc.id}
-                      className="grid max-w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-3 overflow-hidden rounded-lg border border-stone-200 bg-white p-4 transition-colors hover:border-teal-200 hover:bg-teal-50/30"
-                    >
-                      <button
-                        type="button"
-                        onClick={() => handlePreviewDoc(doc)}
-                        className="min-w-0 flex-1 overflow-hidden text-left"
+                  {paginatedHelpDocs.map((doc) => {
+                    const linkedDoc = doc.linkedDocId ? helpDocs.find((helpDoc) => helpDoc.id === doc.linkedDocId) : null;
+
+                    return (
+                      <div
+                        key={doc.id}
+                        className="grid max-w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-3 overflow-hidden rounded-lg border border-stone-200 bg-white p-4 transition-colors hover:border-teal-200 hover:bg-teal-50/30"
                       >
-                        <div className="mb-1 flex min-w-0 items-center gap-2">
-                          <FileText className="h-4 w-4 shrink-0 text-stone-400" />
-                          <h3 className="min-w-0 flex-1 truncate text-sm font-medium text-stone-900">
-                            {doc.title}
-                          </h3>
-                          <Badge variant="outline" className="shrink-0 text-[10px] text-stone-400">
-                            {doc.category}
-                          </Badge>
-                          {doc.language && doc.language !== "unknown" && (
-                            <Badge variant="secondary" className="shrink-0 text-[10px]">
-                              {doc.language === "zh" ? "中文" : "English"}
-                            </Badge>
-                          )}
+                        <div className="min-w-0 overflow-hidden text-left">
+                          <button
+                            type="button"
+                            onClick={() => handlePreviewDoc(doc)}
+                            className="block min-w-0 overflow-hidden text-left"
+                          >
+                            <div className="mb-1 flex min-w-0 items-center gap-2">
+                              <FileText className="h-4 w-4 shrink-0 text-stone-400" />
+                              <h3 className="min-w-0 flex-1 truncate text-sm font-medium text-stone-900">
+                                {doc.title}
+                              </h3>
+                              <Badge variant="outline" className="shrink-0 text-[10px] text-stone-400">
+                                {doc.category}
+                              </Badge>
+                              {doc.language && doc.language !== "unknown" && (
+                                <Badge variant="secondary" className="shrink-0 text-[10px]">
+                                  {doc.language === "zh" ? "中文" : "English"}
+                                </Badge>
+                              )}
+                            </div>
+                            <p
+                              className="truncate text-xs text-stone-400"
+                              title={doc.sourceUrl || undefined}
+                            >
+                              {doc.content.length.toLocaleString()} 字符 · 更新于 {doc.lastUpdated} · 点击查看文档内容
+                              {doc.sourceUrl ? ` · ${doc.sourceUrl}` : ""}
+                            </p>
+                          </button>
+
+                          <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md bg-stone-50 px-2 py-1.5 text-xs text-stone-500">
+                            <LinkIcon className="h-3.5 w-3.5 shrink-0 text-teal-600" />
+                            <span className="shrink-0">关联文档：</span>
+                            {linkedDoc ? (
+                              <button
+                                type="button"
+                                onClick={() => handlePreviewDoc(linkedDoc)}
+                                className="min-w-0 flex-1 truncate text-left font-medium text-teal-700 hover:underline"
+                                title={linkedDoc.title}
+                              >
+                                {linkedDoc.title}
+                              </button>
+                            ) : (
+                              <span className="min-w-0 flex-1 truncate text-stone-400">
+                                未关联，可点击右侧「关联」选择对应语言文档
+                              </span>
+                            )}
+                            {linkedDoc?.language && linkedDoc.language !== "unknown" && (
+                              <Badge variant="secondary" className="shrink-0 text-[10px]">
+                                {linkedDoc.language === "zh" ? "中文" : "English"}
+                              </Badge>
+                            )}
+                          </div>
                         </div>
-                        <p
-                          className="truncate text-xs text-stone-400"
-                          title={doc.sourceUrl || undefined}
-                        >
-                          {doc.content.length.toLocaleString()} 字符 · 更新于 {doc.lastUpdated} · 点击查看文档内容
-                          {doc.sourceUrl ? ` · ${doc.sourceUrl}` : ""}
-                        </p>
-                      </button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="shrink-0 text-red-500 hover:bg-red-50 hover:text-red-600"
-                        onClick={() => handleRemoveDoc(doc.id)}
-                      >
-                        删除
-                      </Button>
-                    </div>
-                  ))}
+
+                        <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="shrink-0 text-teal-700 hover:bg-teal-50"
+                            onClick={() => handleOpenLinkDrawer(doc)}
+                          >
+                            {linkedDoc ? "更换关联" : "关联"}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="shrink-0 text-red-500 hover:bg-red-50 hover:text-red-600"
+                            onClick={() => handleRemoveDoc(doc.id)}
+                          >
+                            删除
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
 
@@ -1265,6 +1373,130 @@ export default function HomePage() {
           </>
         )}
       </main>
+
+      {/* Document Link Drawer */}
+      <Sheet open={linkDrawerOpen} onOpenChange={setLinkDrawerOpen}>
+        <SheetContent
+          side="right"
+          className="w-[840px] max-w-[94vw] sm:max-w-[840px] overflow-hidden p-0"
+        >
+          {linkingDoc && (
+            <>
+              <SheetHeader className="border-b border-stone-200 px-6 py-4">
+                <SheetTitle className="flex min-w-0 items-center gap-2 text-lg">
+                  <LinkIcon className="h-5 w-5 shrink-0 text-teal-600" />
+                  <span className="min-w-0 truncate">关联文档：{linkingDoc.title}</span>
+                </SheetTitle>
+                <SheetDescription className="text-left">
+                  选择对应的中文或英文文档，系统会自动建立双向关联；不需要关联的文档可以保持未关联。
+                </SheetDescription>
+              </SheetHeader>
+
+              <div className="grid h-[calc(100vh-120px)] grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
+                <div className="min-w-0 border-b border-stone-200 p-4 lg:border-b-0 lg:border-r">
+                  <input
+                    value={linkDocSearch}
+                    onChange={(event) => setLinkDocSearch(event.target.value)}
+                    placeholder="搜索要关联的文档名称或链接"
+                    className="mb-3 w-full rounded-md border border-stone-200 bg-white px-3 py-2 text-sm outline-none transition-colors focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                  />
+                  {linkingDoc.linkedDocId && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="mb-3 w-full text-stone-600"
+                      onClick={() => handleUnlinkDoc(linkingDoc.id)}
+                    >
+                      取消当前关联
+                    </Button>
+                  )}
+                  <ScrollArea className="h-[calc(100vh-235px)] pr-2">
+                    <div className="space-y-2">
+                      {linkCandidateDocs.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-stone-200 p-5 text-center text-sm text-stone-400">
+                          没有匹配的可关联文档
+                        </div>
+                      ) : (
+                        linkCandidateDocs.map((candidateDoc) => (
+                          <div
+                            key={candidateDoc.id}
+                            className="rounded-lg border border-stone-200 bg-white p-3"
+                          >
+                            <div className="mb-2 flex min-w-0 items-center gap-2">
+                              <FileText className="h-4 w-4 shrink-0 text-stone-400" />
+                              <p className="min-w-0 flex-1 truncate text-sm font-medium text-stone-900" title={candidateDoc.title}>
+                                {candidateDoc.title}
+                              </p>
+                              {candidateDoc.language && candidateDoc.language !== "unknown" && (
+                                <Badge variant="secondary" className="shrink-0 text-[10px]">
+                                  {candidateDoc.language === "zh" ? "中文" : "English"}
+                                </Badge>
+                              )}
+                            </div>
+                            <p className="mb-3 truncate text-xs text-stone-400" title={candidateDoc.sourceUrl || undefined}>
+                              {candidateDoc.category} · {candidateDoc.content.length.toLocaleString()} 字符
+                              {candidateDoc.sourceUrl ? ` · ${candidateDoc.sourceUrl}` : ""}
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                type="button"
+                                size="sm"
+                                className="bg-teal-600 hover:bg-teal-700"
+                                onClick={() => handleLinkDocs(candidateDoc)}
+                              >
+                                选择关联
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setLinkPreviewDocId(candidateDoc.id)}
+                              >
+                                预览
+                              </Button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </ScrollArea>
+                </div>
+
+                <div className="min-w-0 overflow-hidden bg-stone-50">
+                  {linkPreviewDoc ? (
+                    <ScrollArea className="h-full">
+                      <div className="p-5">
+                        <div className="mb-3 min-w-0 rounded-lg border border-stone-200 bg-white p-4">
+                          <div className="mb-1 flex min-w-0 items-center gap-2">
+                            <FileText className="h-4 w-4 shrink-0 text-teal-600" />
+                            <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-stone-900" title={linkPreviewDoc.title}>
+                              {linkPreviewDoc.title}
+                            </h3>
+                          </div>
+                          <p className="truncate text-xs text-stone-400" title={linkPreviewDoc.sourceUrl || undefined}>
+                            {linkPreviewDoc.category} · {linkPreviewDoc.content.length.toLocaleString()} 字符 · 更新于 {linkPreviewDoc.lastUpdated}
+                            {linkPreviewDoc.sourceUrl ? ` · ${linkPreviewDoc.sourceUrl}` : ""}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+                          {linkPreviewDoc.htmlContent
+                            ? renderHtmlDocument(linkPreviewDoc.htmlContent)
+                            : renderFormattedDocument(linkPreviewDoc.content)}
+                        </div>
+                      </div>
+                    </ScrollArea>
+                  ) : (
+                    <div className="flex h-full items-center justify-center p-8 text-center text-sm text-stone-400">
+                      点击左侧文档的「预览」查看内容，确认后再选择关联。
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
 
       {/* Uploaded Document Preview Drawer */}
       <Sheet open={previewOpen} onOpenChange={setPreviewOpen}>
