@@ -98,6 +98,58 @@ function removeLinkedDocId(doc: DocDetail): DocDetail {
   return nextDoc;
 }
 
+function getStringField(value: unknown) {
+  return typeof value === "string" ? value : undefined;
+}
+
+function htmlToPlainText(htmlContent: string) {
+  return htmlContent
+    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeHelpDocument(rawDoc: unknown): DocDetail | null {
+  if (!rawDoc || typeof rawDoc !== "object") return null;
+
+  const doc = rawDoc as Record<string, unknown>;
+  const id = getStringField(doc.id);
+  const title = getStringField(doc.title);
+  const lastUpdated = getStringField(doc.lastUpdated) ?? getStringField(doc.last_updated);
+
+  if (!id || !title || !lastUpdated) return null;
+
+  const language = getStringField(doc.language);
+  const htmlContent = getStringField(doc.htmlContent) ?? getStringField(doc.html_content);
+  const content = getStringField(doc.content) ?? (htmlContent ? htmlToPlainText(htmlContent) : "");
+
+  return {
+    id,
+    title,
+    category: getStringField(doc.category) ?? "未分类",
+    lastUpdated,
+    content,
+    sourceUrl: getStringField(doc.sourceUrl) ?? getStringField(doc.source_url),
+    htmlContent,
+    language: language === "zh" || language === "en" || language === "unknown" ? language : "unknown",
+    linkedDocId: getStringField(doc.linkedDocId) ?? getStringField(doc.linked_doc_id),
+  };
+}
+
+function normalizeHelpDocuments(rawDocs: unknown): DocDetail[] {
+  if (!Array.isArray(rawDocs)) return [];
+  return rawDocs.flatMap((rawDoc) => {
+    const normalizedDoc = normalizeHelpDocument(rawDoc);
+    return normalizedDoc ? [normalizedDoc] : [];
+  });
+}
+
+function hasReadableContent(doc: DocDetail) {
+  return doc.content.trim().length > 0 || Boolean(doc.htmlContent?.trim());
+}
+
 function renderInlineFormatting(text: string) {
   const parts: ReactNode[] = [];
   const boldPattern = /\*\*(.*?)\*\*/g;
@@ -393,16 +445,7 @@ export default function HomePage() {
         const response = await fetch("/api/docs");
         const data = await response.json();
         if (data.documents && Array.isArray(data.documents)) {
-          const docs: DocDetail[] = data.documents.map((doc: Record<string, unknown>) => ({
-            id: doc.id as string,
-            title: doc.title as string,
-            category: (doc.category as string) || "未分类",
-            lastUpdated: (doc.last_updated as string) || "",
-            content: doc.content as string || "",
-            sourceUrl: (doc.source_url as string) || undefined,
-            htmlContent: (doc.html_content as string) || undefined,
-            language: (doc.language as "zh" | "en" | "unknown") || "unknown",
-          }));
+          const docs = normalizeHelpDocuments(data.documents);
           setHelpDocs(docs);
         }
       } catch {
@@ -416,12 +459,11 @@ export default function HomePage() {
 
   // 同步文档到 Supabase（合并：新增或更新）
   const syncDocsToSupabase = useCallback(async (docs: DocDetail[]) => {
-    if (docs.length === 0) return;
-
-    setSyncing(true);
+    const normalizedDocs = normalizeHelpDocuments(docs).filter(hasReadableContent);
+    if (normalizedDocs.length === 0) return;
 
     try {
-      const rows = docs.map((doc) => ({
+      const rows = normalizedDocs.map((doc) => ({
         id: doc.id,
         title: doc.title,
         category: doc.category || "未分类",
@@ -439,33 +481,42 @@ export default function HomePage() {
       });
 
       if (!response.ok) {
-        throw new Error("文档同步失败");
+        throw new Error("文档同步到云端失败");
       }
     } catch {
       setUploadError("文档同步到云端失败，请检查网络连接");
-    } finally {
-      setSyncing(false);
     }
   }, []);
 
   const mergeHelpDocs = useCallback((incomingDocs: DocDetail[]) => {
+    const normalizedIncomingDocs = normalizeHelpDocuments(incomingDocs).filter(hasReadableContent);
+
     setHelpDocs((currentDocs) => {
       const nextDocs = [...currentDocs];
-      for (const incomingDoc of incomingDocs) {
+
+      for (const incomingDoc of normalizedIncomingDocs) {
         const existingIndex = nextDocs.findIndex((doc) => doc.id === incomingDoc.id);
+
         if (existingIndex >= 0) {
+          const existingDoc = nextDocs[existingIndex];
+          const incomingHasContent = hasReadableContent(incomingDoc);
+
           nextDocs[existingIndex] = {
+            ...existingDoc,
             ...incomingDoc,
-            linkedDocId: incomingDoc.linkedDocId ?? nextDocs[existingIndex].linkedDocId,
+            content: incomingHasContent ? incomingDoc.content : existingDoc.content,
+            htmlContent: incomingDoc.htmlContent ?? existingDoc.htmlContent,
+            linkedDocId: incomingDoc.linkedDocId ?? existingDoc.linkedDocId,
           };
         } else {
           nextDocs.push(incomingDoc);
         }
       }
+
       return nextDocs;
     });
-    // 同步到 Supabase
-    syncDocsToSupabase(incomingDocs);
+
+    syncDocsToSupabase(normalizedIncomingDocs);
   }, [syncDocsToSupabase]);
 
   const handleFileUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
@@ -526,7 +577,11 @@ export default function HomePage() {
         throw new Error(data.error || "链接导入失败");
       }
 
-      const importedDoc = data.document as DocDetail;
+      const importedDoc = normalizeHelpDocument(data.document);
+      if (!importedDoc || !hasReadableContent(importedDoc)) {
+        throw new Error("链接导入结果缺少文档正文，请稍后重试");
+      }
+
       mergeHelpDocs([importedDoc]);
       setUrlInput("");
       setUploadMessage(`已从链接导入《${importedDoc.title}》，AI 将在该网页文档中检索修改建议`);
@@ -557,7 +612,11 @@ export default function HomePage() {
         throw new Error(data.error || "批量导入失败");
       }
 
-      const importedDocs = data.documents as DocDetail[];
+      const importedDocs = normalizeHelpDocuments(data.documents).filter(hasReadableContent);
+      if (importedDocs.length === 0) {
+        throw new Error("批量导入结果缺少文档正文，请稍后重试");
+      }
+
       mergeHelpDocs(importedDocs);
       setSiteUrlInput("");
       const failedCount = Array.isArray(data.failed) ? data.failed.length : 0;
