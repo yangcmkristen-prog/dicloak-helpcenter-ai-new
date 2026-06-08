@@ -32,6 +32,7 @@ function safeParseHttpUrl(url: string) {
     return null;
   }
 }
+
 function hasPathPrefix(path: string, prefix: string) {
   return path === prefix || path.startsWith(`${prefix}/`);
 }

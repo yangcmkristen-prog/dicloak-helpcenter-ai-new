@@ -56,6 +56,13 @@ interface DocDetail {
   language?: "zh" | "en" | "unknown";
 }
 
+interface RetrievalStats {
+  totalDocuments: number;
+  candidateDocuments: number;
+  candidateLimit: number;
+  searchTerms: string[];
+}
+
 type ActiveTab = "help-center" | "analyze";
 type LanguageFilter = "all" | "zh" | "en" | "unknown";
 
@@ -317,7 +324,7 @@ function renderDocumentWithChanges(
               <div
                 key={`add-after-${i}-${j}`}
                 className="my-2 rounded-md border border-green-300 bg-green-50 p-3"
-                >
+              >
                 <div className="mb-1.5 flex items-center gap-1.5">
                   <Plus className="h-3.5 w-3.5 text-green-600" />
                   <span className="text-xs font-medium text-green-700">
@@ -347,6 +354,7 @@ export default function HomePage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [affectedDocs, setAffectedDocs] = useState<AffectedDoc[]>([]);
   const [streamingText, setStreamingText] = useState("");
+  const [retrievalStats, setRetrievalStats] = useState<RetrievalStats | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<AffectedDoc | null>(null);
   const [docDetail, setDocDetail] = useState<DocDetail | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -398,6 +406,9 @@ export default function HomePage() {
   // 同步文档到 Supabase（合并：新增或更新）
   const syncDocsToSupabase = useCallback(async (docs: DocDetail[]) => {
     if (docs.length === 0) return;
+
+    setSyncing(true);
+
     try {
       const rows = docs.map((doc) => ({
         id: doc.id,
@@ -409,13 +420,20 @@ export default function HomePage() {
         html_content: doc.htmlContent || null,
         language: doc.language || "unknown",
       }));
-      await fetch("/api/docs", {
+
+      const response = await fetch("/api/docs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(rows),
       });
+
+      if (!response.ok) {
+        throw new Error("文档同步失败");
+      }
     } catch {
       setUploadError("文档同步到云端失败，请检查网络连接");
+    } finally {
+      setSyncing(false);
     }
   }, []);
 
@@ -550,15 +568,22 @@ export default function HomePage() {
     setHelpDocs((currentDocs) => currentDocs.filter((doc) => doc.id !== docId));
     setAffectedDocs((currentDocs) => currentDocs.filter((doc) => doc.docId !== docId));
     setPreviewDoc((currentDoc) => (currentDoc?.id === docId ? null : currentDoc));
-    // 从 Supabase 删除
+    setSyncing(true);
+
     try {
-      await fetch("/api/docs", {
+      const response = await fetch("/api/docs", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: docId }),
       });
+
+      if (!response.ok) {
+        throw new Error("云端删除失败");
+      }
     } catch {
-      // 本地已删除，云端删除失败可忽略（下次加载时会同步）
+      setUploadError("文档已从本地移除，但云端删除失败，请刷新后确认");
+    } finally {
+      setSyncing(false);
     }
   }, []);
 
@@ -574,6 +599,7 @@ export default function HomePage() {
     setAnalyzing(true);
     setAffectedDocs([]);
     setStreamingText("");
+    setRetrievalStats(null);
     setError(null);
 
     try {
@@ -603,7 +629,15 @@ export default function HomePage() {
         for (const line of lines) {
           if (line.startsWith("data: ")) {
             try {
-              const data = JSON.parse(line.slice(6));
+              const data = JSON.parse(line.slice(6)) as {
+                error?: string;
+                done?: boolean;
+                content?: string;
+                retrieval?: RetrievalStats;
+              };
+              if (data.retrieval) {
+                setRetrievalStats(data.retrieval);
+              }
               if (data.error) {
                 setError(data.error);
                 break;
@@ -895,6 +929,12 @@ export default function HomePage() {
                   {uploadError}
                 </div>
               )}
+              {syncing && (
+                <div className="mt-4 flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-700">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  正在同步云端帮助文档...
+                </div>
+              )}
             </div>
 
             <div className="rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
@@ -1055,7 +1095,9 @@ export default function HomePage() {
                     </span>
                   </div>
                   <Badge variant="secondary" className="text-xs">
-                    检索 {helpDocs.length} 篇帮助文档
+                    {retrievalStats
+                      ? `预检索 ${retrievalStats.candidateDocuments}/${retrievalStats.totalDocuments} 篇`
+                      : `检索 ${helpDocs.length} 篇帮助文档`}
                   </Badge>
                 </div>
                 <Textarea
@@ -1066,8 +1108,8 @@ export default function HomePage() {
                   disabled={analyzing}
                 />
                 <div className="mt-4 flex items-center justify-between">
-                  <p className="text-sm text-stone-500">
-                    AI 会在已上传的帮助文档中检索需要修改的内容
+                  <p className="text-xs text-stone-400">
+                    将先从 {helpDocs.length} 篇帮助文档中预检索最多 30 篇候选文档，再交给 AI 分析，降低 token 消耗
                   </p>
                   <Button
                     onClick={handleAnalyze}
@@ -1096,15 +1138,21 @@ export default function HomePage() {
             </section>
 
             {/* Streaming Progress */}
-            {analyzing && streamingText && (
+            {analyzing && (streamingText || retrievalStats) && (
               <section className="mb-8">
                 <div className="rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
                   <div className="mb-3 flex items-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin text-teal-600" />
                     <span className="text-sm font-medium text-stone-700">
-                      AI 正在检索帮助文档...
+                      AI 正在分析候选帮助文档...
                     </span>
                   </div>
+                  {retrievalStats && (
+                    <div className="mb-3 rounded-lg border border-teal-100 bg-teal-50 p-3 text-xs text-teal-700">
+                      已先从 {retrievalStats.totalDocuments} 篇文档中预检索出 {retrievalStats.candidateDocuments} 篇候选文档
+                      {retrievalStats.searchTerms.length > 0 ? `，命中关键词：${retrievalStats.searchTerms.slice(0, 8).join("、")}` : ""}
+                    </div>
+                  )}
                   <ScrollArea className="h-[200px] rounded-lg bg-stone-50 p-4">
                     <pre className="whitespace-pre-wrap text-xs text-stone-500">
                       {streamingText}
@@ -1129,13 +1177,21 @@ export default function HomePage() {
             {/* Results */}
             {affectedDocs.length > 0 && !analyzing && (
               <section>
-                <div className="mb-4 flex items-center justify-between">
-                  <h2 className="text-lg font-semibold text-stone-900">
-                    需要更新的文档
-                  </h2>
-                  <Badge variant="secondary" className="text-xs">
-                    共 {affectedDocs.length} 篇
-                  </Badge>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-lg font-semibold text-stone-900">
+                      已上传文档
+                    </h2>
+                    {syncing && (
+                      <Badge variant="secondary" className="gap-1 text-xs">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        同步中
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="mt-1 text-sm text-stone-500">
+                    共 {helpDocs.length} 篇，约 {totalCharacters.toLocaleString()} 字符
+                  </p>
                 </div>
 
                 <div className="grid gap-4">
@@ -1156,7 +1212,7 @@ export default function HomePage() {
                               </span>
                               <Badge
                                 variant="outline"
-                                className="text-[10px] text-stone-400"
+                                className="shrink-0 text-[10px] text-stone-400"
                               >
                                 {doc.docId}
                               </Badge>
