@@ -5,7 +5,6 @@ import { helpDocuments, type HelpDocument } from "@/lib/documents";
 export const maxDuration = 60;
 
 const CANDIDATE_DOCUMENT_LIMIT = 30;
-const MAX_DOCUMENT_CONTENT_CHARS = 6000;
 const MAX_MATCHED_TERMS = 8;
 
 interface AnalyzeRequestBody {
@@ -146,11 +145,6 @@ function selectCandidateDocuments(documents: HelpDocument[], feature: string) {
   };
 }
 
-function truncateDocumentContent(content: string) {
-  if (content.length <= MAX_DOCUMENT_CONTENT_CHARS) return content;
-  return `${content.slice(0, MAX_DOCUMENT_CONTENT_CHARS)}\n\n……（文档内容已截断，AI 需基于上述最相关片段判断是否需要更新）`;
-}
-
 function normalizeDocumentPayload(doc: DocumentPayload): HelpDocument | null {
   const lastUpdated = typeof doc.lastUpdated === "string" ? doc.lastUpdated : doc.last_updated;
 
@@ -222,7 +216,7 @@ export async function POST(request: NextRequest) {
     .map((item, index) => {
       const doc = item.doc;
       const matchedTerms = item.matchedTerms.length > 0 ? item.matchedTerms.join("、") : "无明确关键词命中";
-      return `【候选序号: ${index + 1}】【预检索分数: ${item.score.toFixed(1)}】【命中词: ${matchedTerms}】\n【文档ID: ${doc.id}】【标题: ${doc.title}】【分类: ${doc.category}】【更新时间: ${doc.lastUpdated}】\n内容:\n${truncateDocumentContent(doc.content)}`;
+      return `【候选序号: ${index + 1}】【预检索分数: ${item.score.toFixed(1)}】【命中词: ${matchedTerms}】\n【文档ID: ${doc.id}】【标题: ${doc.title}】【分类: ${doc.category}】【更新时间: ${doc.lastUpdated}】\n内容:\n${doc.content}`;
     })
     .join("\n\n---\n\n");
 
