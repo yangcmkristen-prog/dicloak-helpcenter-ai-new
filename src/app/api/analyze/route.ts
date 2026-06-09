@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { LLMClient, Config, HeaderUtils } from "coze-coding-dev-sdk";
+import { streamDeepSeekChatCompletion } from "@/lib/deepseek-client";
 import { helpDocuments, type HelpDocument } from "@/lib/documents";
 
 export const maxDuration = 60;
@@ -207,10 +207,6 @@ export async function POST(request: NextRequest) {
   const retrievalResult = selectCandidateDocuments(searchableDocuments, feature.trim());
   const searchableCandidateDocuments = retrievalResult.candidateDocuments;
 
-  const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
-  const config = new Config();
-  const client = new LLMClient(config, customHeaders);
-
   // 第一阶段先做轻量关键词召回，只把最相关候选文档交给 LLM，降低 300+ 文档场景下的 token 消耗。
   const docSummaries = retrievalResult.rankedDocuments
     .map((item, index) => {
@@ -296,18 +292,16 @@ ${feature}
           )
         );
 
-        const llmStream = client.stream(messages, {
-          model: "doubao-seed-2-0-pro-260215",
+        const llmStream = streamDeepSeekChatCompletion({
+          messages,
           temperature: 0.3,
+          responseFormat: "json_object",
         });
 
-        for await (const chunk of llmStream) {
-          if (chunk.content) {
-            const text = chunk.content.toString();
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ content: text })}\n\n`)
-            );
-          }
+        for await (const text of llmStream) {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ content: text })}\n\n`)
+          );
         }
 
         controller.enqueue(
