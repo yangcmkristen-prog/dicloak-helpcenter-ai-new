@@ -685,6 +685,21 @@ export default function HomePage() {
     setLinkPreviewDocId(null);
   }, []);
 
+  const deleteDocFromSupabase = useCallback(async (docId: string) => {
+    const response = await fetch("/api/docs", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: docId }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(
+        typeof data.error === "string" ? data.error : "云端删除失败"
+      );
+    }
+  }, []);
+
   const handleRemoveDoc = useCallback((docId: string) => {
     setHelpDocs((currentDocs) =>
       currentDocs
@@ -699,7 +714,15 @@ export default function HomePage() {
     setAffectedDocs((currentDocs) => currentDocs.filter((doc) => doc.docId !== docId));
     setPreviewDoc((currentDoc) => (currentDoc?.id === docId ? null : currentDoc));
     setLinkingDoc((currentDoc) => (currentDoc?.id === docId ? null : currentDoc));
-  }, []);
+
+    void deleteDocFromSupabase(docId)
+      .then(() => {
+        setUploadMessage("文档已删除，并已同步到云端");
+      })
+      .catch((error) => {
+        setUploadError(error instanceof Error ? error.message : "文档已从本地移除，但云端删除失败，请刷新后确认");
+      });
+  }, [deleteDocFromSupabase]);
 
   const handleAnalyze = useCallback(async () => {
     if (!feature.trim()) return;

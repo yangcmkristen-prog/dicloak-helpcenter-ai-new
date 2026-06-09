@@ -7,7 +7,7 @@ export async function GET() {
     const client = getSupabaseClient();
     const { data, error } = await client
       .from("help_documents")
-      .select("id, title, category, last_updated, language, source_url")
+      .select("id, title, category, content, html_content, last_updated, language, source_url")
       .order("created_at", { ascending: true });
 
     if (error) throw new Error(`查询文档列表失败: ${error.message}`);
@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
       const { data, error } = await client
         .from("help_documents")
         .upsert(rows, { onConflict: "id" })
-        .select("id, title, category, last_updated, language, source_url");
+        .select("id, title, category, last_updated, content, html_content, language, source_url");
 
       if (error) throw new Error(`批量创建文档失败: ${error.message}`);
       return NextResponse.json({ documents: data });
@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
         },
         { onConflict: "id" }
       )
-      .select("id, title, category, last_updated, language, source_url");
+      .select("id, title, category, last_updated, content, html_content, language, source_url");
 
     if (error) throw new Error(`创建文档失败: ${error.message}`);
     return NextResponse.json({ document: data[0] });
