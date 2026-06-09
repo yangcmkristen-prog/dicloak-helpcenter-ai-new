@@ -64,6 +64,18 @@ interface RetrievalStats {
   searchTerms: string[];
 }
 
+interface ImportSiteResponse {
+  documents?: unknown;
+  error?: string;
+  failed?: unknown;
+  crawledCount?: unknown;
+  discoveredCount?: unknown;
+  importedCount?: unknown;
+  totalImportedCount?: unknown;
+  hasMore?: boolean;
+  nextCursor?: string | null;
+}
+
 type ActiveTab = "help-center" | "analyze";
 type LanguageFilter = "all" | "zh" | "en" | "unknown";
 
@@ -90,6 +102,20 @@ function getDocumentTitle(fileName: string, content: string) {
 
 function formatDate(date: Date) {
   return date.toISOString().slice(0, 10);
+}
+
+async function parseJsonResponse<T>(response: Response, fallbackMessage: string): Promise<T> {
+  const responseText = await response.text();
+
+  try {
+    return (responseText ? JSON.parse(responseText) : {}) as T;
+  } catch {
+    throw new Error(
+      response.ok
+        ? `${fallbackMessage}：接口返回格式异常`
+        : `${fallbackMessage}：接口返回非 JSON 错误：${responseText.slice(0, 200) || response.statusText}`
+    );
+  }
 }
 
 function removeLinkedDocId(doc: DocDetail): DocDetail {
@@ -601,47 +627,64 @@ export default function HomePage() {
     setUploadMessage(null);
 
     try {
-      const response = await fetch("/api/import-site", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: trimmedUrl }),
-      });
+      let cursor: string | undefined;
+      let hasMore = false;
+      let batchIndex = 0;
+      let totalImportedCount = 0;
+      let totalFailedCount = 0;
+      let latestCrawledCount = 0;
+      let latestDiscoveredCount = 0;
 
-      const responseText = await response.text();
-      let data: {
-        documents?: unknown;
-        error?: string;
-        failed?: unknown;
-        crawledCount?: unknown;
-        discoveredCount?: unknown;
-      } = {};
+      do {
+        batchIndex += 1;
 
-      try {
-        data = responseText ? JSON.parse(responseText) : {};
-      } catch {
-        throw new Error(
-          response.ok
-            ? "批量导入接口返回格式异常，请稍后重试"
-            : `批量导入接口返回非 JSON 错误：${responseText.slice(0, 200) || response.statusText}`
+        if (batchIndex > 50) {
+          throw new Error("批量导入批次数过多，请稍后重新开始导入");
+        }
+
+        const response = await fetch("/api/import-site", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: trimmedUrl, cursor }),
+        });
+
+        const data = await parseJsonResponse<ImportSiteResponse>(response, "批量导入失败");
+
+        if (!response.ok) {
+          throw new Error(data.error || "批量导入失败");
+        }
+
+        const importedDocs = Array.isArray(data.documents)
+          ? normalizeHelpDocuments(data.documents).filter(hasReadableContent)
+          : [];
+
+        if (importedDocs.length > 0) {
+          mergeHelpDocs(importedDocs);
+          totalImportedCount += importedDocs.length;
+        }
+
+        const failedCount = Array.isArray(data.failed) ? data.failed.length : 0;
+        totalFailedCount += failedCount;
+        latestCrawledCount = typeof data.crawledCount === "number" ? data.crawledCount : latestCrawledCount;
+        latestDiscoveredCount = typeof data.discoveredCount === "number" ? data.discoveredCount : latestDiscoveredCount;
+
+        cursor = typeof data.nextCursor === "string" ? data.nextCursor : undefined;
+        hasMore = Boolean(data.hasMore && cursor);
+
+        setUploadMessage(
+          `正在分批导入：已完成 ${batchIndex} 批，已导入 ${totalImportedCount} 篇，已扫描 ${latestCrawledCount} 个页面`
         );
-      }
+      } while (hasMore);
 
-      if (!response.ok || !Array.isArray(data.documents)) {
-        throw new Error(data.error || "批量导入失败");
-      }
-
-      const importedDocs = normalizeHelpDocuments(data.documents).filter(hasReadableContent);
-      if (importedDocs.length === 0) {
+      if (totalImportedCount === 0) {
         throw new Error("批量导入结果缺少文档正文，请稍后重试");
       }
 
-      mergeHelpDocs(importedDocs);
       setSiteUrlInput("");
-      const failedCount = Array.isArray(data.failed) ? data.failed.length : 0;
-      const crawledCount = typeof data.crawledCount === "number" ? data.crawledCount : 0;
-      const discoveredCount = typeof data.discoveredCount === "number" ? data.discoveredCount : importedDocs.length;
       setUploadMessage(
-        `已批量导入 ${importedDocs.length} 篇帮助文档，扫描 ${crawledCount} 个页面，发现 ${discoveredCount} 个链接${failedCount > 0 ? `，${failedCount} 个链接导入失败` : ""}`
+        `已批量导入 ${totalImportedCount} 篇帮助文档，扫描 ${latestCrawledCount} 个页面，发现 ${latestDiscoveredCount} 个链接${
+          totalFailedCount > 0 ? `，${totalFailedCount} 个链接导入失败` : ""
+        }`
       );
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "批量导入失败，请确认帮助中心页面可访问后重试");

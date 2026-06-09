@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { NextRequest, NextResponse } from "next/server";
 import {
   buildHelpDocumentFromHtml,
@@ -9,9 +10,11 @@ import {
 
 export const maxDuration = 60;
 
-const MAX_DISCOVERED_LINKS = 300;
-const MAX_CRAWL_PAGES = 80;
-const MAX_IMPORTED_DOCUMENTS = 50;
+const MAX_DISCOVERED_LINKS = 1000;
+const MAX_TOTAL_CRAWL_PAGES = 600;
+const MAX_TOTAL_IMPORTED_DOCUMENTS = 250;
+const MAX_CRAWL_PAGES_PER_BATCH = 80;
+const MAX_IMPORTED_DOCUMENTS_PER_BATCH = 20;
 
 function getLanguagePrefix(url: URL) {
   const match = /^\/(zh|en)(\/|$)/i.exec(url.pathname);
@@ -74,8 +77,61 @@ function isLikelyArticlePage(url: URL, seedUrl: URL, html: string) {
   return hasTitle && (hasArticleContainer || hasArticleMeta);
 }
 
+interface ImportSiteRequestBody {
+  url?: unknown;
+  cursor?: unknown;
+}
+
+interface ImportSiteCursor {
+  seedUrl: string;
+  queue: string[];
+  queuedUrls: string[];
+  crawledUrls: string[];
+  importedUrlKeys: string[];
+  discoveredCount: number;
+  seedLanguage: "zh" | "en" | "unknown";
+}
+
+function encodeImportSiteCursor(cursor: ImportSiteCursor) {
+  return Buffer.from(JSON.stringify(cursor), "utf-8").toString("base64url");
+}
+
+function decodeImportSiteCursor(cursor: unknown): ImportSiteCursor | null {
+  if (typeof cursor !== "string" || cursor.trim().length === 0) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf-8")) as Partial<ImportSiteCursor>;
+
+    if (
+      typeof parsed.seedUrl === "string" &&
+      Array.isArray(parsed.queue) &&
+      Array.isArray(parsed.queuedUrls) &&
+      Array.isArray(parsed.crawledUrls) &&
+      Array.isArray(parsed.importedUrlKeys) &&
+      typeof parsed.discoveredCount === "number" &&
+      (parsed.seedLanguage === "zh" || parsed.seedLanguage === "en" || parsed.seedLanguage === "unknown")
+    ) {
+      return {
+        seedUrl: parsed.seedUrl,
+        queue: parsed.queue.filter((item): item is string => typeof item === "string"),
+        queuedUrls: parsed.queuedUrls.filter((item): item is string => typeof item === "string"),
+        crawledUrls: parsed.crawledUrls.filter((item): item is string => typeof item === "string"),
+        importedUrlKeys: parsed.importedUrlKeys.filter((item): item is string => typeof item === "string"),
+        discoveredCount: parsed.discoveredCount,
+        seedLanguage: parsed.seedLanguage,
+      };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 export async function POST(request: NextRequest) {
-  const { url } = await request.json();
+  const { url, cursor } = (await request.json()) as ImportSiteRequestBody;
 
   if (!url || typeof url !== "string") {
     return NextResponse.json({ error: "请输入帮助中心首页链接" }, { status: 400 });
@@ -84,16 +140,32 @@ export async function POST(request: NextRequest) {
   try {
     const seedUrl = normalizeUrl(parseHttpUrl(url));
     const languagePrefix = getLanguagePrefix(seedUrl);
-    const queuedUrls = new Set<string>([seedUrl.toString()]);
-    const crawledUrls = new Set<string>();
-    const importedUrlKeys = new Set<string>();
-    const queue: URL[] = [seedUrl];
+    const savedCursor = decodeImportSiteCursor(cursor);
+
+    if (savedCursor && savedCursor.seedUrl !== seedUrl.toString()) {
+      return NextResponse.json({ error: "续传状态与当前帮助中心链接不匹配，请重新开始导入" }, { status: 400 });
+    }
+
+    const queuedUrls = new Set<string>(savedCursor?.queuedUrls ?? [seedUrl.toString()]);
+    const crawledUrls = new Set<string>(savedCursor?.crawledUrls ?? []);
+    const importedUrlKeys = new Set<string>(savedCursor?.importedUrlKeys ?? []);
+    const queue: URL[] = (savedCursor?.queue ?? [seedUrl.toString()])
+      .map((item) => safeParseHttpUrl(item))
+      .filter((item): item is URL => Boolean(item));
+
     const documents = [];
     const failed: { url: string; reason: string }[] = [];
-    let discoveredCount = 1;
-    let seedLanguage: "zh" | "en" | "unknown" = "unknown";
+    let discoveredCount = savedCursor?.discoveredCount ?? 1;
+    let seedLanguage: "zh" | "en" | "unknown" = savedCursor?.seedLanguage ?? "unknown";
+    let batchCrawledCount = 0;
 
-    while (queue.length > 0 && crawledUrls.size < MAX_CRAWL_PAGES && documents.length < MAX_IMPORTED_DOCUMENTS) {
+    while (
+      queue.length > 0 &&
+      batchCrawledCount < MAX_CRAWL_PAGES_PER_BATCH &&
+      crawledUrls.size < MAX_TOTAL_CRAWL_PAGES &&
+      documents.length < MAX_IMPORTED_DOCUMENTS_PER_BATCH &&
+      importedUrlKeys.size < MAX_TOTAL_IMPORTED_DOCUMENTS
+    ) {
       const currentUrl = queue.shift();
       if (!currentUrl) break;
 
@@ -113,6 +185,8 @@ export async function POST(request: NextRequest) {
       }
 
       crawledUrls.add(currentKey);
+      batchCrawledCount += 1;
+
       if (currentKey === seedUrl.toString()) {
         seedLanguage = extractLanguage(currentUrl, html);
       }
@@ -153,13 +227,32 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    if (documents.length === 0) {
+    const hasMore =
+      queue.length > 0 &&
+      crawledUrls.size < MAX_TOTAL_CRAWL_PAGES &&
+      importedUrlKeys.size < MAX_TOTAL_IMPORTED_DOCUMENTS;
+
+    const nextCursor = hasMore
+      ? encodeImportSiteCursor({
+          seedUrl: seedUrl.toString(),
+          queue: queue.map((item) => item.toString()),
+          queuedUrls: Array.from(queuedUrls),
+          crawledUrls: Array.from(crawledUrls),
+          importedUrlKeys: Array.from(importedUrlKeys),
+          discoveredCount,
+          seedLanguage,
+        })
+      : null;
+
+    if (documents.length === 0 && !hasMore) {
       return NextResponse.json(
         {
           error: "未能从该帮助中心页面导入有效文档，请确认链接是帮助中心首页或包含文档导航的页面",
           failed,
           crawledCount: crawledUrls.size,
           discoveredCount,
+          hasMore: false,
+          nextCursor: null,
         },
         { status: 422 }
       );
@@ -170,8 +263,12 @@ export async function POST(request: NextRequest) {
       failed,
       discoveredCount,
       crawledCount: crawledUrls.size,
+      batchCrawledCount,
       importedCount: documents.length,
-      limited: queue.length > 0 || queuedUrls.size >= MAX_DISCOVERED_LINKS || documents.length >= MAX_IMPORTED_DOCUMENTS,
+      totalImportedCount: importedUrlKeys.size,
+      hasMore,
+      nextCursor,
+      limited: hasMore || queuedUrls.size >= MAX_DISCOVERED_LINKS,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "批量导入失败，请确认网页可访问后重试";
