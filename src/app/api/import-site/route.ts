@@ -7,11 +7,11 @@ import {
   parseHttpUrl,
 } from "@/lib/import-help-document";
 
-export const maxDuration = 120;
+export const maxDuration = 60;
 
-const MAX_DISCOVERED_LINKS = 1000;
-const MAX_CRAWL_PAGES = 500;
-const MAX_IMPORTED_DOCUMENTS = 250;
+const MAX_DISCOVERED_LINKS = 300;
+const MAX_CRAWL_PAGES = 80;
+const MAX_IMPORTED_DOCUMENTS = 50;
 
 function getLanguagePrefix(url: URL) {
   const match = /^\/(zh|en)(\/|$)/i.exec(url.pathname);

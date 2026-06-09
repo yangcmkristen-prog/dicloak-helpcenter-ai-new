@@ -606,7 +606,25 @@ export default function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: trimmedUrl }),
       });
-      const data = await response.json();
+
+      const responseText = await response.text();
+      let data: {
+        documents?: unknown;
+        error?: string;
+        failed?: unknown;
+        crawledCount?: unknown;
+        discoveredCount?: unknown;
+      } = {};
+
+      try {
+        data = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        throw new Error(
+          response.ok
+            ? "批量导入接口返回格式异常，请稍后重试"
+            : `批量导入接口返回非 JSON 错误：${responseText.slice(0, 200) || response.statusText}`
+        );
+      }
 
       if (!response.ok || !Array.isArray(data.documents)) {
         throw new Error(data.error || "批量导入失败");
