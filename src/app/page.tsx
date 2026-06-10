@@ -439,6 +439,8 @@ export default function HomePage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [affectedDocs, setAffectedDocs] = useState<AffectedDoc[]>([]);
   const [streamingText, setStreamingText] = useState("");
+  const [analysisMarkdown, setAnalysisMarkdown] = useState("");
+  const [includeFinalContent, setIncludeFinalContent] = useState(false);
   const [retrievalStats, setRetrievalStats] = useState<RetrievalStats | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<AffectedDoc | null>(null);
   const [docDetail, setDocDetail] = useState<DocDetail | null>(null);
@@ -846,6 +848,7 @@ export default function HomePage() {
     setAnalyzing(true);
     setAffectedDocs([]);
     setStreamingText("");
+    setAnalysisMarkdown("");
     setRetrievalStats(null);
     setError(null);
 
@@ -853,7 +856,11 @@ export default function HomePage() {
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ feature: feature.trim(), documents: helpDocs }),
+        body: JSON.stringify({
+          feature: feature.trim(),
+          documents: helpDocs,
+          includeFinalContent,
+        }),
       });
 
       if (!response.ok) {
@@ -890,29 +897,8 @@ export default function HomePage() {
                 break;
               }
               if (data.done) {
-                // Parse the accumulated text as JSON
-                try {
-                  // Extract JSON from the text (might have markdown code block wrapping)
-                  let jsonStr = fullText.trim();
-                  const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-                  if (jsonMatch) {
-                    jsonStr = jsonMatch[1].trim();
-                  }
-                  // Try to find the JSON object
-                  const braceStart = jsonStr.indexOf("{");
-                  const braceEnd = jsonStr.lastIndexOf("}");
-                  if (braceStart !== -1 && braceEnd > braceStart) {
-                    jsonStr = jsonStr.substring(braceStart, braceEnd + 1);
-                  }
-
-                  const result = JSON.parse(jsonStr);
-                  if (result.affectedDocs && Array.isArray(result.affectedDocs)) {
-                    setAffectedDocs(result.affectedDocs);
-                    setActiveTab("analyze");
-                  }
-                } catch {
-                  setError("AI 返回格式异常，请重试");
-                }
+                setAnalysisMarkdown(fullText.trim());
+                setActiveTab("analyze");
               }
               if (data.content) {
                 fullText += data.content;
@@ -931,7 +917,7 @@ export default function HomePage() {
     } finally {
       setAnalyzing(false);
     }
-  }, [feature, helpDocs]);
+  }, [feature, helpDocs, includeFinalContent]);
 
   const handleDocClick = useCallback(async (doc: AffectedDoc) => {
     setSelectedDoc(doc);
@@ -1416,6 +1402,16 @@ export default function HomePage() {
                     disabled={!feature.trim() || analyzing || helpDocs.length === 0}
                     className="bg-teal-600 hover:bg-teal-700"
                   >
+                  <label className="mt-3 flex items-center gap-2 text-sm text-stone-600">
+                    <input
+                      type="checkbox"
+                      checked={includeFinalContent}
+                      onChange={(event) => setIncludeFinalContent(event.target.checked)}
+                      disabled={analyzing}
+                      className="h-4 w-4 rounded border-stone-300"
+                    />
+                    生成完整最终文档内容（会增加 AI 输出 token 和费用）
+                  </label>
                     {analyzing ? (
                       <>
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1471,6 +1467,17 @@ export default function HomePage() {
                     <span className="text-sm font-medium">{error}</span>
                   </div>
                 </div>
+              </section>
+            )}
+
+            {analysisMarkdown && !analyzing && (
+              <section className="mb-8 rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
+                <h2 className="mb-4 text-lg font-semibold text-stone-900">
+                  AI 文档修改建议
+                </h2>
+                <pre className="max-h-[720px] overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-4 text-sm leading-6 text-stone-800">
+                  {analysisMarkdown}
+                </pre>
               </section>
             )}
 
@@ -1549,7 +1556,7 @@ export default function HomePage() {
             )}
 
             {/* Empty State */}
-            {!analyzing && affectedDocs.length === 0 && !error && !streamingText && (
+            {!analyzing && affectedDocs.length === 0 && !analysisMarkdown && !error && !streamingText && (
               <section className="py-16 text-center">
                 <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-stone-100">
                   <FileText className="h-8 w-8 text-stone-300" />

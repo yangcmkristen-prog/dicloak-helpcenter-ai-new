@@ -4,12 +4,13 @@ import { helpDocuments, type HelpDocument } from "@/lib/documents";
 
 export const maxDuration = 60;
 
-const CANDIDATE_DOCUMENT_LIMIT = 30;
+const CANDIDATE_DOCUMENT_LIMIT = 12;
 const MAX_MATCHED_TERMS = 8;
 
 interface AnalyzeRequestBody {
   feature?: unknown;
   documents?: unknown;
+  includeFinalContent?: unknown;
 }
 
 interface DocumentPayload {
@@ -19,6 +20,9 @@ interface DocumentPayload {
   lastUpdated?: unknown;
   last_updated?: unknown;
   content?: unknown;
+  language?: unknown;
+  linkedDocId?: unknown;
+  linked_doc_id?: unknown;
 }
 
 interface RankedDocument {
@@ -156,9 +160,18 @@ function normalizeDocumentPayload(doc: DocumentPayload): HelpDocument | null {
     typeof doc.content === "string" &&
     doc.content.trim().length > 0
   ) {
+    const linkedDocId =
+      typeof doc.linkedDocId === "string"
+        ? doc.linkedDocId
+        : typeof doc.linked_doc_id === "string"
+          ? doc.linked_doc_id
+          : undefined;
+
     return {
       ...(doc as HelpDocument),
       lastUpdated,
+      language: typeof doc.language === "string" ? doc.language : "unknown",
+      linkedDocId,
     };
   }
 
@@ -188,7 +201,8 @@ const ENGLISH_STOP_WORDS = new Set([
 ]);
 
 export async function POST(request: NextRequest) {
-  const { feature, documents } = (await request.json()) as AnalyzeRequestBody;
+  const { feature, documents, includeFinalContent } = (await request.json()) as AnalyzeRequestBody;
+  const shouldGenerateFinalContent = includeFinalContent === true;
 
   if (!feature || typeof feature !== "string" || feature.trim().length === 0) {
     return new Response(JSON.stringify({ error: "请输入新功能描述" }), {
@@ -203,9 +217,35 @@ export async function POST(request: NextRequest) {
         .filter((doc): doc is HelpDocument => Boolean(doc))
     : [];
 
-  const searchableDocuments = customDocuments.length > 0 ? customDocuments : helpDocuments;
+  const allDocuments = customDocuments.length > 0 ? customDocuments : helpDocuments;
+  const zhDocuments = allDocuments.filter((doc) => getDocumentLanguage(doc) === "zh");
+  const searchableDocuments = zhDocuments.length > 0 ? zhDocuments : allDocuments;
   const retrievalResult = selectCandidateDocuments(searchableDocuments, feature.trim());
   const searchableCandidateDocuments = retrievalResult.candidateDocuments;
+
+  const documentById = new Map(allDocuments.map((doc) => [doc.id, doc]));
+
+  const relatedEnglishDocuments = searchableCandidateDocuments
+    .map((doc) => {
+      const linkedDocId =
+        "linkedDocId" in doc && typeof doc.linkedDocId === "string"
+          ? doc.linkedDocId
+          : "linked_doc_id" in doc && typeof doc.linked_doc_id === "string"
+            ? doc.linked_doc_id
+            : undefined;
+
+      if (!linkedDocId) return null;
+
+      const linkedDoc = documentById.get(linkedDocId);
+      if (!linkedDoc || getDocumentLanguage(linkedDoc) !== "en") return null;
+
+      return {
+        zhDocId: doc.id,
+        zhDocTitle: doc.title,
+        enDoc: linkedDoc,
+      };
+    })
+    .filter((item): item is { zhDocId: string; zhDocTitle: string; enDoc: HelpDocument } => Boolean(item));
 
   // 第一阶段先做轻量关键词召回，只把最相关候选文档交给 LLM，降低 300+ 文档场景下的 token 消耗。
   const docSummaries = retrievalResult.rankedDocuments
@@ -216,58 +256,112 @@ export async function POST(request: NextRequest) {
     })
     .join("\n\n---\n\n");
 
-  const systemPrompt = `你是一个帮助中心文档维护专家。你的任务是根据用户输入的新功能描述，只在系统预检索出来的候选帮助中心文档中判断哪些文档需要更新，并给出具体的修改建议。
+  const linkedEnglishDocSummaries = relatedEnglishDocuments
+    .map((item) => {
+      const doc = item.enDoc;
+      return `
+  内容:
+  ${doc.content}`;
+    })
+    .join("\n\n---\n\n");
 
-系统已先从 ${retrievalResult.totalDocuments} 篇帮助文档中完成轻量关键词预检索，本次只提供最相关的 ${searchableCandidateDocuments.length} 篇候选文档给你分析。不要引用候选文档之外的任何文档。
+  const finalContentInstruction = shouldGenerateFinalContent
+    ? `## 最终文档内容
 
-你必须严格按照以下JSON格式返回结果，不要包含任何其他文字说明：
+  必须输出可直接发布的最终文档内容。
+  中文文档和英文文档分开输出。
+  如果涉及新建文档，也在这里输出完整文档。`
+    : `## 最终文档内容
 
-{
-  "affectedDocs": [
-    {
-      "docId": "文档ID",
-      "docName": "文档标题",
-      "reason": "为什么需要修改这个文档",
-      "changes": [
-        {
-          "type": "delete",
-          "originalText": "需要删除的原文内容（必须是文档中的原文片段）",
-          "reason": "删除原因"
-        },
-        {
-          "type": "add",
-          "newContent": "需要新增的内容",
-          "position": "after|before|replace",
-          "referenceText": "在哪个位置添加（某段原文的引用）",
-          "reason": "新增原因"
-        }
-      ]
-    }
-  ]
-}
+  本次不生成完整最终稿，以节省 token。仅输出影响分析、建议删除内容、建议新增内容、建议插入位置和 diff。
+  如果需要完整最终稿，请重新发起分析并选择“生成最终文档内容”。`;
 
-注意事项：
-1. originalText 必须是候选文档中的原文片段，便于定位
-2. type 只能是 "delete" 或 "add"
-3. position 只能是 "after"、"before" 或 "replace"
-4. referenceText 用于定位新增内容的位置
-5. 如果某个候选文档不需要修改，不要包含在结果中
-6. 请仔细分析每个候选文档，确保修改建议合理且必要
-7. 新增内容应该与原文档风格保持一致
-8. docId 和 docName 必须来自本次提供的候选帮助中心文档，不要编造文档
-9. 如果候选文档都不需要修改，请返回 {"affectedDocs": []}`;
+  const systemPrompt = `你是 DICloak 帮助中心文档维护专家。
 
-  const userPrompt = `以下是从当前帮助中心 ${retrievalResult.totalDocuments} 篇文档中预检索出的 ${searchableCandidateDocuments.length} 篇候选文档：
+  任务：根据功能更新内容，分析帮助中心文档是否需要修改或新增，并输出帮助中心文档维护建议。
 
-${docSummaries}
+  范围约束：
+  1. 用户会用中文描述新功能。
+  2. 你必须优先且只基于系统提供的中文候选文档判断哪些中文文档需要修改。
+  3. 不要主动分析未提供的英文文档。
+  4. 只有当中文候选文档存在关联英文文档时，才需要同步输出对应英文文档的修改内容。
+  5. 如果中文文档需要修改，但没有提供关联英文文档，则只输出中文文档修改内容，不要编造英文文档。
+  6. 如果新功能与现有中文候选文档主题强相关，则修改现有文档。
+  7. 如果新功能属于独立功能模块、单独入口或内容较多，不适合插入现有文档，则建议新建中文文档。
+  8. 不允许为了复用文档而强行添加到不相关文档中。
 
----
+  文档风格要求：
+  1. 严格参考帮助中心已有文档的标题层级、结构、语气和写作风格。
+  2. 保持与同分类文档一致的章节命名方式。
+  3. 使用简洁、客观、说明性的表达，不使用营销语言。
+  4. 不编造不存在的功能、步骤或限制。
+  5. 优先复用现有文档中的术语和命名。
 
-现在有一个新功能需要上线，功能描述如下：
+  文档修改要求：
+  1. 保留原有文档结构。
+  2. 仅修改受影响部分。
+  3. 明确输出：
+    * 修改文档名称
+    * 修改原因
+    * 建议删除内容
+    * 建议新增内容
+  4. 新增内容应标明建议插入位置。
+  5. 呈现为 diff 格式。
+  6. 中文文档和对应英文关联文档要分别呈现，不要混在一起。
 
-${feature}
+  新建文档要求：
+  1. 给出建议标题。
+  2. 按帮助中心标准结构生成完整文档。
+  3. 包含：
+    * 使用场景（如适用）
+    * 操作步骤
+    * FAQ（如适用）
 
-请只基于上述候选帮助中心文档分析哪些文档需要更新，并给出具体的修改建议。只返回需要修改的文档，以JSON格式返回。`;
+  图片要求：
+  1. 涉及界面操作时必须预留截图位置。
+  2. 使用格式：
+  [图片占位符：配置页面]
+
+  输出要求：
+  你必须严格按照以下 Markdown 结构返回，不要返回 JSON，不要包裹代码块：
+
+  # 文档影响分析
+
+  ## 需要修改的文档
+
+  逐个列出需要修改的中文文档，以及每篇中文文档关联的英文文档。
+
+  每篇文档必须包含：
+  - 修改文档名称
+  - 修改原因
+  - 建议删除内容
+  - 建议新增内容
+  - 建议插入位置
+  - diff
+
+  ## 建议新增的文档
+
+  如果不需要新增文档，写“暂无”。
+
+  ${finalContentInstruction}`;
+
+  const userPrompt = `以下是从当前帮助中心 ${allDocuments.length} 篇文档中预检索出的 ${searchableCandidateDocuments.length} 篇中文候选文档：
+
+  ${docSummaries || "无中文候选文档"}
+
+  ---
+
+  以下是上述中文候选文档已关联的英文文档。只有当对应中文文档需要修改时，才同步分析这些英文文档：
+
+  ${linkedEnglishDocSummaries || "无关联英文文档"}
+
+  ---
+
+  现在有一个新功能需要上线，功能描述如下：
+
+  ${feature}
+
+  请只基于上述中文候选文档判断需要修改或新增的中文帮助中心文档；如果相关中文文档存在关联英文文档，请同步给出英文文档修改内容。输出必须使用指定 Markdown 结构。`;
 
   const messages = [
     { role: "system" as const, content: systemPrompt },
@@ -295,7 +389,7 @@ ${feature}
         const llmStream = streamDeepSeekChatCompletion({
           messages,
           temperature: 0.3,
-          responseFormat: "json_object",
+          responseFormat: "text",
         });
 
         for await (const text of llmStream) {
