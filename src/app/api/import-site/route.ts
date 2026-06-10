@@ -13,8 +13,9 @@ export const maxDuration = 60;
 const MAX_DISCOVERED_LINKS = 1000;
 const MAX_TOTAL_CRAWL_PAGES = 600;
 const MAX_TOTAL_IMPORTED_DOCUMENTS = 250;
-const MAX_CRAWL_PAGES_PER_BATCH = 80;
-const MAX_IMPORTED_DOCUMENTS_PER_BATCH = 20;
+const MAX_CRAWL_PAGES_PER_BATCH = 25;
+const MAX_IMPORTED_DOCUMENTS_PER_BATCH = 8;
+const MAX_BATCH_RUNTIME_MS = 35_000;
 
 function getLanguagePrefix(url: URL) {
   const match = /^\/(zh|en)(\/|$)/i.exec(url.pathname);
@@ -152,15 +153,16 @@ export async function POST(request: NextRequest) {
     const queue: URL[] = (savedCursor?.queue ?? [seedUrl.toString()])
       .map((item) => safeParseHttpUrl(item))
       .filter((item): item is URL => Boolean(item));
-
     const documents = [];
     const failed: { url: string; reason: string }[] = [];
     let discoveredCount = savedCursor?.discoveredCount ?? 1;
     let seedLanguage: "zh" | "en" | "unknown" = savedCursor?.seedLanguage ?? "unknown";
     let batchCrawledCount = 0;
+    const batchStartedAt = Date.now();
 
     while (
       queue.length > 0 &&
+      Date.now() - batchStartedAt < MAX_BATCH_RUNTIME_MS &&
       batchCrawledCount < MAX_CRAWL_PAGES_PER_BATCH &&
       crawledUrls.size < MAX_TOTAL_CRAWL_PAGES &&
       documents.length < MAX_IMPORTED_DOCUMENTS_PER_BATCH &&
@@ -181,12 +183,12 @@ export async function POST(request: NextRequest) {
           reason: error instanceof Error ? error.message : "网页获取失败",
         });
         crawledUrls.add(currentKey);
+        batchCrawledCount += 1;
         continue;
       }
 
       crawledUrls.add(currentKey);
       batchCrawledCount += 1;
-
       if (currentKey === seedUrl.toString()) {
         seedLanguage = extractLanguage(currentUrl, html);
       }

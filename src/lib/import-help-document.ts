@@ -10,7 +10,7 @@ export interface ImportedHelpDocument {
 }
 
 const MAX_HTML_BYTES = 5 * 1024 * 1024;
-const FETCH_TIMEOUT_MS = 15000;
+const FETCH_TIMEOUT_MS = 8000;
 
 export function decodeHtmlEntities(text: string) {
   return text

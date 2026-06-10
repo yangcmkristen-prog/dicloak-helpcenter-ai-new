@@ -36,19 +36,20 @@ export async function POST(request: NextRequest) {
         source_url: (doc.source_url as string) || null,
         html_content: (doc.html_content as string) || null,
         language: (doc.language as string) || "unknown",
+        linked_doc_id: (doc.linked_doc_id as string) || null,
       }));
 
       const { data, error } = await client
         .from("help_documents")
         .upsert(rows, { onConflict: "id" })
-        .select("id, title, category, last_updated, content, html_content, language, source_url");
+        .select("id, title, category, last_updated, language, source_url, linked_doc_id");
 
       if (error) throw new Error(`批量创建文档失败: ${error.message}`);
       return NextResponse.json({ documents: data });
     }
 
     // 单条创建
-    const { id, title, category, last_updated, content, source_url, html_content, language } = body as {
+    const { id, title, category, last_updated, content, source_url, html_content, language, linked_doc_id } = body as {
       id: string;
       title: string;
       category?: string;
@@ -57,6 +58,7 @@ export async function POST(request: NextRequest) {
       source_url?: string;
       html_content?: string;
       language?: string;
+      linked_doc_id?: string | null;
     };
 
     if (!id || !title || !content) {
@@ -75,6 +77,7 @@ export async function POST(request: NextRequest) {
           source_url: source_url || null,
           html_content: html_content || null,
           language: language || "unknown",
+          linked_doc_id: linked_doc_id || null,
         },
         { onConflict: "id" }
       )
@@ -82,6 +85,44 @@ export async function POST(request: NextRequest) {
 
     if (error) throw new Error(`创建文档失败: ${error.message}`);
     return NextResponse.json({ document: data[0] });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "未知错误";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+// PATCH /api/docs — 更新文档关联关系
+export async function PATCH(request: NextRequest) {
+  try {
+    const client = getSupabaseClient();
+    const body = await request.json();
+    const { links } = body as { links?: { id?: string; linked_doc_id?: string | null }[] };
+
+    if (!Array.isArray(links) || links.length === 0) {
+      return NextResponse.json({ error: "缺少 links 参数" }, { status: 400 });
+    }
+
+    const normalizedLinks = links
+      .filter((link) => typeof link.id === "string" && link.id.trim().length > 0)
+      .map((link) => ({
+        id: link.id as string,
+        linked_doc_id: typeof link.linked_doc_id === "string" && link.linked_doc_id.trim().length > 0 ? link.linked_doc_id : null,
+      }));
+
+    if (normalizedLinks.length === 0) {
+      return NextResponse.json({ error: "缺少有效文档 ID" }, { status: 400 });
+    }
+
+    for (const link of normalizedLinks) {
+      const { error } = await client
+        .from("help_documents")
+        .update({ linked_doc_id: link.linked_doc_id })
+        .eq("id", link.id);
+
+      if (error) throw new Error(`更新文档关联失败: ${error.message}`);
+    }
+
+    return NextResponse.json({ success: true, updatedCount: normalizedLinks.length });
   } catch (err) {
     const message = err instanceof Error ? err.message : "未知错误";
     return NextResponse.json({ error: message }, { status: 500 });

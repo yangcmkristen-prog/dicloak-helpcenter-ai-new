@@ -28,7 +28,7 @@ interface DeepSeekStreamChunk {
 }
 
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
-const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
+const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
 
 function getDeepSeekApiKey() {
   const apiKey = process.env.DEEPSEEK_API_KEY;

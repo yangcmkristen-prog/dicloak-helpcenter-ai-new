@@ -498,6 +498,7 @@ export default function HomePage() {
         source_url: doc.sourceUrl || null,
         html_content: doc.htmlContent || null,
         language: doc.language || "unknown",
+        linked_doc_id: doc.linkedDocId || null,
       }));
 
       const response = await fetch("/api/docs", {
@@ -511,6 +512,29 @@ export default function HomePage() {
       }
     } catch {
       setUploadError("文档同步到云端失败，请检查网络连接");
+    }
+  }, []);
+
+  const persistDocLinksToSupabase = useCallback(async (docs: DocDetail[]) => {
+    if (docs.length === 0) return;
+
+    try {
+      const response = await fetch("/api/docs", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          links: docs.map((doc) => ({
+            id: doc.id,
+            linked_doc_id: doc.linkedDocId || null,
+          })),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("文档关联同步到云端失败");
+      }
+    } catch {
+      setUploadError("文档关联同步到云端失败，请刷新页面重试");
     }
   }, []);
 
@@ -638,7 +662,7 @@ export default function HomePage() {
       do {
         batchIndex += 1;
 
-        if (batchIndex > 50) {
+        if (batchIndex > 80) {
           throw new Error("批量导入批次数过多，请稍后重新开始导入");
         }
 
@@ -708,8 +732,10 @@ export default function HomePage() {
   const handleLinkDocs = useCallback((targetDoc: DocDetail) => {
     if (!linkingDoc || linkingDoc.id === targetDoc.id) return;
 
-    setHelpDocs((currentDocs) =>
-      currentDocs.map((doc) => {
+    let docsToSync: DocDetail[] = [];
+
+    setHelpDocs((currentDocs) => {
+      const nextDocs = currentDocs.map((doc) => {
         if (doc.id === linkingDoc.id) {
           return { ...doc, linkedDocId: targetDoc.id };
         }
@@ -720,31 +746,50 @@ export default function HomePage() {
           return removeLinkedDocId(doc);
         }
         return doc;
-      })
-    );
+      });
+
+      docsToSync = nextDocs.filter(
+        (doc) =>
+          doc.id === linkingDoc.id ||
+          doc.id === targetDoc.id ||
+          currentDocs.some((currentDoc) => currentDoc.id === doc.id && currentDoc.linkedDocId !== doc.linkedDocId)
+      );
+
+      return nextDocs;
+    });
+
+    void persistDocLinksToSupabase(docsToSync);
     setUploadMessage(`已关联《${linkingDoc.title}》和《${targetDoc.title}》`);
     setLinkDrawerOpen(false);
     setLinkingDoc(null);
     setLinkPreviewDocId(null);
-  }, [linkingDoc]);
+  }, [linkingDoc, persistDocLinksToSupabase]);
 
   const handleUnlinkDoc = useCallback((docId: string) => {
+    let docsToSync: DocDetail[] = [];
+
     setHelpDocs((currentDocs) => {
       const currentDoc = currentDocs.find((doc) => doc.id === docId);
       const linkedDocId = currentDoc?.linkedDocId;
 
-      return currentDocs.map((doc) => {
+      const nextDocs = currentDocs.map((doc) => {
         if (doc.id === docId || (linkedDocId && doc.id === linkedDocId)) {
           return removeLinkedDocId(doc);
         }
         return doc;
       });
+
+      docsToSync = nextDocs.filter((doc) => currentDocs.some((currentDoc) => currentDoc.id === doc.id && currentDoc.linkedDocId !== doc.linkedDocId));
+
+      return nextDocs;
     });
+
+    void persistDocLinksToSupabase(docsToSync);
     setUploadMessage("已取消文档关联");
     setLinkDrawerOpen(false);
     setLinkingDoc(null);
     setLinkPreviewDocId(null);
-  }, []);
+  }, [persistDocLinksToSupabase]);
 
   const deleteDocFromSupabase = useCallback(async (docId: string) => {
     const response = await fetch("/api/docs", {
@@ -761,29 +806,33 @@ export default function HomePage() {
     }
   }, []);
 
-  const handleRemoveDoc = useCallback((docId: string) => {
-    setHelpDocs((currentDocs) =>
-      currentDocs
+  const handleRemoveDoc = useCallback(async (docId: string) => {
+    let docsToSync: DocDetail[] = [];
+
+    setHelpDocs((currentDocs) => {
+      const nextDocs = currentDocs
         .filter((doc) => doc.id !== docId)
         .map((doc) => {
           if (doc.linkedDocId === docId) {
             return removeLinkedDocId(doc);
           }
           return doc;
-        })
-    );
+        });
+
+      docsToSync = nextDocs.filter((doc) =>
+        currentDocs.some((currentDoc) => currentDoc.id === doc.id && currentDoc.linkedDocId !== doc.linkedDocId)
+      );
+
+      return nextDocs;
+    });
+
+    void persistDocLinksToSupabase(docsToSync);
+    await deleteDocFromSupabase(docId);
+
     setAffectedDocs((currentDocs) => currentDocs.filter((doc) => doc.docId !== docId));
     setPreviewDoc((currentDoc) => (currentDoc?.id === docId ? null : currentDoc));
     setLinkingDoc((currentDoc) => (currentDoc?.id === docId ? null : currentDoc));
-
-    void deleteDocFromSupabase(docId)
-      .then(() => {
-        setUploadMessage("文档已删除，并已同步到云端");
-      })
-      .catch((error) => {
-        setUploadError(error instanceof Error ? error.message : "文档已从本地移除，但云端删除失败，请刷新后确认");
-      });
-  }, [deleteDocFromSupabase]);
+  }, [deleteDocFromSupabase, persistDocLinksToSupabase]);
 
   const handleAnalyze = useCallback(async () => {
     if (!feature.trim()) return;

@@ -7,7 +7,7 @@ export async function GET() {
     const client = getSupabaseClient();
     const { data, error } = await client
       .from("help_documents")
-      .select("id, title, category, last_updated, language, source_url")
+      .select("id, title, category, last_updated, language, source_url, linked_doc_id")
       .order("created_at", { ascending: true });
 
     if (error) throw new Error(`查询文档列表失败: ${error.message}`);
@@ -20,6 +20,7 @@ export async function GET() {
       lastUpdated: doc.last_updated,
       language: doc.language,
       sourceUrl: doc.source_url,
+      linkedDocId: doc.linked_doc_id,
     }));
     return NextResponse.json({ documents: docs });
   } catch (err) {
@@ -58,6 +59,7 @@ export async function POST(request: NextRequest) {
       sourceUrl: data.source_url,
       htmlContent: data.html_content,
       language: data.language,
+      linkedDocId: data.linked_doc_id,
     };
     return NextResponse.json({ document: doc });
   } catch (err) {

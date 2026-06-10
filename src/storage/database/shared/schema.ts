@@ -16,12 +16,14 @@ export const helpDocuments = pgTable(
     source_url: text("source_url"),
     html_content: text("html_content"),
     language: varchar("language", { length: 10 }).default("unknown"),
+    linked_doc_id: varchar("linked_doc_id", { length: 255 }),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
     index("help_documents_category_idx").on(table.category),
     index("help_documents_language_idx").on(table.language),
+    index("help_documents_linked_doc_id_idx").on(table.linked_doc_id),
     index("help_documents_created_at_idx").on(table.created_at),
   ]
 );
