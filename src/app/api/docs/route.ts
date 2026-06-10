@@ -7,7 +7,7 @@ export async function GET() {
     const client = getSupabaseClient();
     const { data, error } = await client
       .from("help_documents")
-      .select("id, title, category, content, html_content, last_updated, language, source_url")
+      .select("id, title, category, content, html_content, last_updated, language, source_url, linked_doc_id")
       .order("created_at", { ascending: true });
 
     if (error) throw new Error(`查询文档列表失败: ${error.message}`);
