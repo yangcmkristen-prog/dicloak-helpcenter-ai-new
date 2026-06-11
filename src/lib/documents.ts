@@ -5,6 +5,11 @@ export interface HelpDocument {
   category: string;
   lastUpdated: string;
   content: string;
+  language?: "zh" | "en" | "unknown" | string;
+  sourceUrl?: string;
+  htmlContent?: string;
+  linkedDocId?: string;
+  linked_doc_id?: string;
 }
 
 export const helpDocuments: HelpDocument[] = [
