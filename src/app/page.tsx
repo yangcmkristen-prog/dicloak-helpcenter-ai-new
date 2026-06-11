@@ -310,18 +310,26 @@ function renderHtmlDocument(htmlContent: string) {
 
 // Render document with highlighted changes
 
+function normalizeDiffForDisplay(diff?: string) {
+  return (diff || "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "[图片占位符：相关界面截图]")
+    .replace(/https?:\/\/help\.dicloak\.com\/wp-content\/uploads\/[^\s)]+/g, "[图片占位符：相关界面截图]");
+}
+
 function renderUnifiedDiff(diff?: string) {
-  if (!diff?.trim()) {
+  const normalizedDiff = normalizeDiffForDisplay(diff);
+
+  if (!normalizedDiff.trim()) {
     return (
-      <div className="rounded-lg border border-stone-200 bg-stone-50 p-4 text-sm text-stone-500">
+      <div className="rounded-lg border border-dashed border-stone-200 bg-stone-50 p-6 text-center text-sm text-stone-400">
         暂无 diff 内容
       </div>
     );
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border border-stone-200 bg-white font-mono text-sm">
-      {diff.split("\n").map((line, index) => {
+    <div className="overflow-hidden rounded-lg border border-stone-200 bg-white font-mono text-sm shadow-sm">
+      {normalizedDiff.split("\n").map((line, index) => {
         const isDelete = line.startsWith("-") && !line.startsWith("---");
         const isAdd = line.startsWith("+") && !line.startsWith("+++");
         const isHeader = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@");
@@ -329,18 +337,20 @@ function renderUnifiedDiff(diff?: string) {
         return (
           <div
             key={`${index}-${line}`}
-            className={[
-              "grid grid-cols-[56px_1fr] border-b border-stone-100 last:border-b-0",
-              isDelete ? "bg-red-50 text-red-900" : "",
-              isAdd ? "bg-green-50 text-green-900" : "",
-              isHeader ? "bg-stone-100 text-stone-600" : "",
-              !isDelete && !isAdd && !isHeader ? "bg-white text-stone-700" : "",
-            ].join(" ")}
+            className={`grid grid-cols-[56px_minmax(0,1fr)] border-b border-stone-100 last:border-b-0 ${
+              isDelete
+                ? "bg-red-50 text-red-900"
+                : isAdd
+                  ? "bg-green-50 text-green-900"
+                  : isHeader
+                    ? "bg-stone-100 text-stone-600"
+                    : "bg-white text-stone-700"
+            }`}
           >
-            <div className="select-none border-r border-stone-200 px-2 py-1 text-right text-xs text-stone-400">
+            <span className="select-none border-r border-stone-200 px-3 py-1.5 text-right text-xs text-stone-400">
               {index + 1}
-            </div>
-            <pre className="overflow-x-auto whitespace-pre-wrap px-3 py-1 leading-6">
+            </span>
+            <pre className="min-w-0 overflow-x-auto whitespace-pre-wrap px-3 py-1.5 leading-6">
               {line || " "}
             </pre>
           </div>
@@ -359,8 +369,6 @@ export default function HomePage() {
   const [suggestedNewDocs, setSuggestedNewDocs] = useState<SuggestedNewDoc[]>([]);
   const [selectedAffectedDocId, setSelectedAffectedDocId] = useState<string | null>(null);
   const [streamingText, setStreamingText] = useState("");
-  const [analysisMarkdown, setAnalysisMarkdown] = useState("");
-  const [includeFinalContent, setIncludeFinalContent] = useState(false);
   const [retrievalStats, setRetrievalStats] = useState<RetrievalStats | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [helpDocs, setHelpDocs] = useState<DocDetail[]>([]);
@@ -767,7 +775,6 @@ export default function HomePage() {
     setSuggestedNewDocs([]);
     setSelectedAffectedDocId(null);
     setStreamingText("");
-    setAnalysisMarkdown("");
     setRetrievalStats(null);
     setError(null);
 
@@ -777,7 +784,6 @@ export default function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           feature: feature.trim(),
-          includeFinalContent,
           model: analyzeModel,
         }),
       });
@@ -872,7 +878,7 @@ export default function HomePage() {
     } finally {
       setAnalyzing(false);
     }
-  }, [feature, helpDocs, includeFinalContent, analyzeModel]);
+  }, [feature, helpDocs, analyzeModel]);
 
   const totalCharacters = helpDocs.reduce((sum, doc) => sum + doc.content.length, 0);
   const normalizedDocSearch = docSearch.trim().toLowerCase();
@@ -915,7 +921,7 @@ export default function HomePage() {
     <div className="min-h-screen bg-stone-50">
       {/* Header */}
       <header className="border-b border-stone-200 bg-white">
-        <div className="mx-auto max-w-5xl px-6 py-5">
+        <div className="mx-auto max-w-[1440px] px-6 py-5">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-teal-600">
               <BookOpen className="h-5 w-5 text-white" />
@@ -933,7 +939,7 @@ export default function HomePage() {
       </header>
 
       {/* Main Content */}
-      <main className="mx-auto max-w-5xl px-6 py-8">
+      <main className="mx-auto max-w-[1440px] px-6 py-8">
         {/* Navigation Tabs */}
         <div className="mb-6 flex rounded-xl border border-stone-200 bg-white p-1 shadow-sm">
           <button
@@ -1332,17 +1338,6 @@ export default function HomePage() {
                       <option value="deepseek-v4-pro">DeepSeek V4 Pro（质量更高）</option>
                     </select>
 
-                    <label className="flex items-center gap-2 text-sm text-stone-600">
-                      <input
-                        type="checkbox"
-                        checked={includeFinalContent}
-                        onChange={(event) => setIncludeFinalContent(event.target.checked)}
-                        disabled={analyzing}
-                        className="h-4 w-4 rounded border-stone-300"
-                      />
-                      生成完整最终文档内容（会增加 AI 输出 token 和费用）
-                    </label>
-
                     <Button
                       onClick={handleAnalyze}
                       disabled={!feature.trim() || analyzing || helpDocs.length === 0}
@@ -1404,17 +1399,6 @@ export default function HomePage() {
                     <span className="text-sm font-medium">{error}</span>
                   </div>
                 </div>
-              </section>
-            )}
-
-            {analysisMarkdown && !analyzing && (
-              <section className="mb-8 rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
-                <h2 className="mb-4 text-lg font-semibold text-stone-900">
-                  AI 文档修改建议
-                </h2>
-                <pre className="max-h-[720px] overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-4 text-sm leading-6 text-stone-800">
-                  {analysisMarkdown}
-                </pre>
               </section>
             )}
 
@@ -1514,27 +1498,24 @@ export default function HomePage() {
                           </div>
                         </div>
 
-                        <div className="grid gap-4 xl:grid-cols-2">
-                          <div>
-                            <h3 className="mb-2 text-sm font-semibold text-stone-900">
-                              原文预览
-                            </h3>
-                            <div className="max-h-[720px] overflow-auto rounded-lg border border-stone-200 bg-white p-4">
-                              {originalDoc ? renderFormattedDocument(originalDoc.content) : (
-                                <p className="text-sm text-stone-400">
-                                  未找到原文内容
-                                </p>
-                              )}
-                            </div>
-                          </div>
-
-                          <div>
-                            <h3 className="mb-2 text-sm font-semibold text-stone-900">
+                        <div>
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <h3 className="text-sm font-semibold text-stone-900">
                               AI 建议 diff
                             </h3>
-                            <div className="max-h-[720px] overflow-auto">
-                              {renderUnifiedDiff(selectedDoc.unifiedDiff)}
-                            </div>
+                            {originalDoc && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handlePreviewDoc(originalDoc)}
+                              >
+                                查看原文完整内容
+                              </Button>
+                            )}
+                          </div>
+                          <div className="max-h-[760px] overflow-auto">
+                            {renderUnifiedDiff(selectedDoc.unifiedDiff)}
                           </div>
                         </div>
                       </div>
@@ -1567,8 +1548,59 @@ export default function HomePage() {
               </section>
             )}
 
+            {/* Suggested New Docs */}
+            {suggestedNewDocs.length > 0 && !analyzing && (
+              <section className="mt-6 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+                <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold text-stone-900">
+                      建议新增的文档
+                    </h2>
+                    <p className="mt-1 text-sm text-stone-500">
+                      当新功能不适合插入现有文档时，AI 会建议新建独立帮助文档。
+                    </p>
+                  </div>
+                  <Badge variant="secondary" className="text-xs">
+                    {suggestedNewDocs.length} 篇建议新增
+                  </Badge>
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  {suggestedNewDocs.map((doc, index) => (
+                    <article
+                      key={`${doc.title}-${index}`}
+                      className="rounded-xl border border-stone-200 bg-stone-50 p-4"
+                    >
+                      <div className="mb-3 flex flex-wrap items-center gap-2">
+                        <FileText className="h-4 w-4 text-teal-600" />
+                        <h3 className="min-w-0 flex-1 text-base font-semibold text-stone-900">
+                          {doc.title}
+                        </h3>
+                        <Badge variant="outline" className="text-xs">
+                          {doc.category}
+                        </Badge>
+                        {doc.language && (
+                          <Badge variant="secondary" className="text-xs">
+                            {doc.language === "zh" ? "中文" : doc.language === "en" ? "English" : "未知语言"}
+                          </Badge>
+                        )}
+                      </div>
+
+                      <p className="mb-4 text-sm leading-6 text-stone-500">
+                        {doc.reason}
+                      </p>
+
+                      <div className="max-h-[520px] overflow-auto rounded-lg border border-stone-200 bg-white p-4">
+                        {renderFormattedDocument(doc.content)}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {/* Empty State */}
-            {!analyzing && affectedDocs.length === 0 && !analysisMarkdown && !error && !streamingText && (
+            {!analyzing && affectedDocs.length === 0 && suggestedNewDocs.length === 0 && !error && !streamingText && (
               <section className="py-16 text-center">
                 <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-stone-100">
                   <FileText className="h-8 w-8 text-stone-300" />

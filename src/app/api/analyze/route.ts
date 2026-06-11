@@ -11,7 +11,6 @@ const MAX_MATCHED_TERMS = 8;
 interface AnalyzeRequestBody {
   feature?: unknown;
   documents?: unknown;
-  includeFinalContent?: unknown;
   model?: unknown;
 }
 
@@ -235,8 +234,7 @@ async function loadSupabaseDocuments(): Promise<HelpDocument[]> {
 }
 
 export async function POST(request: NextRequest) {
-  const { feature, documents, includeFinalContent, model } = (await request.json()) as AnalyzeRequestBody;
-  const shouldGenerateFinalContent = includeFinalContent === true;
+  const { feature, documents, model } = (await request.json()) as AnalyzeRequestBody;
   const selectedModel = normalizeDeepSeekModel(model);
 
   if (!feature || typeof feature !== "string" || feature.trim().length === 0) {
@@ -314,44 +312,23 @@ export async function POST(request: NextRequest) {
     })
     .join("\n\n---\n\n");
 
-  const finalContentInstruction = shouldGenerateFinalContent
-    ? `## 最终文档内容
-
-  必须输出可直接发布的最终文档内容。
-  中文文档和英文文档分开输出。
-  如果涉及新建文档，也在这里输出完整文档。`
-    : `## 最终文档内容
-
-  本次不生成完整最终稿，以节省 token。仅输出影响分析、建议删除内容、建议新增内容、建议插入位置和 diff。
-  如果需要完整最终稿，请重新发起分析并选择“生成最终文档内容”。`;
-
   const systemPrompt = `你是 DICloak 帮助中心文档维护专家。
 
-  任务：根据功能更新内容，分析帮助中心文档是否需要修改或新增，并输出可供前端渲染的结构化 JSON。
-  ${finalContentInstruction}
+  任务：根据用户输入的新功能描述，分析帮助中心文档是否需要修改或新增，并输出可直接用于前端渲染的文档建议。
 
   重要规则：
   1. 用户会用中文描述新功能。
-  2. 优先分析系统提供的中文候选文档。
-  3. 如果中文候选文档有关联英文文档，且中文文档需要修改，则同步分析对应英文文档。
-  4. 不要分析未提供的文档。
+  2. 优先分析中文候选文档。
+  3. 如果新功能与现有中文文档主题强相关，则修改现有文档，放入 affectedDocs。
+  4. 如果新功能属于独立功能模块、单独入口或内容较多，不适合插入现有文档，则建议新建文档，放入 newDocs。
   5. 不允许为了复用文档而强行添加到不相关文档中。
-  6. 如果新功能与现有文档主题强相关，则修改现有文档。
-  7. 如果新功能属于独立功能模块、单独入口或内容较多，不适合插入现有文档，则建议新建文档。
-  8. 涉及界面操作时，新增内容中必须预留图片占位符，例如：
-  [图片占位符：功能入口]
-  [图片占位符：配置页面]
-  [图片占位符：操作结果]
+  6. 如果中文文档存在关联英文文档，并且该中文文档需要修改，则同步输出英文关联文档的修改建议。
+  7. 不要引用候选文档和关联英文文档之外的任何文档。
+  8. 不要编造不存在的功能、入口、步骤或限制。
 
-  文档风格要求：
-  1. 严格参考帮助中心已有文档的标题层级、结构、语气和写作风格。
-  2. 保持与同分类文档一致的章节命名方式。
-  3. 使用简洁、客观、说明性的表达，不使用营销语言。
-  4. 不编造不存在的功能、步骤或限制。
-  5. 优先复用现有文档中的术语和命名。
+  你必须严格返回 JSON，不要返回 Markdown，不要返回解释文字。
 
-  你必须严格返回 JSON，不要输出 Markdown，不要包裹代码块。格式如下：
-
+  返回格式如下：
   {
     "affectedDocs": [
       {
@@ -363,29 +340,48 @@ export async function POST(request: NextRequest) {
         "insertPosition": "建议插入位置",
         "deleteSummary": "建议删除内容摘要；如果没有删除则写无",
         "addSummary": "建议新增内容摘要；如果没有新增则写无",
-        "unifiedDiff": "--- 原内容\\n+++ 建议内容\\n@@\\n 上下文内容\\n-删除内容\\n+新增内容"
+        "unifiedDiff": "--- 原内容\\n+++ 建议内容\\n@@\\n 原文模块完整上下文\\n-需要删除或替换的原文\\n+建议新增或替换后的内容\\n 原文模块完整上下文"
       }
     ],
     "newDocs": [
       {
         "title": "建议标题",
         "category": "所属分类",
-        "language": "zh|en",
+        "language": "zh",
         "reason": "为什么建议新增",
         "content": "完整新文档内容"
       }
     ]
   }
 
+  affectedDocs 规则：
+  1. affectedDocs 只放需要修改的现有文档。
+  2. docId 和 docName 必须来自候选文档或关联英文文档，不要编造。
+  3. 中文文档需要修改时，language 写 zh。
+  4. 英文关联文档需要同步修改时，language 写 en，并填写 linkedFromDocId。
+  5. 如果没有需要修改的现有文档，affectedDocs 返回 []。
+
   diff 规则：
   1. unifiedDiff 必须使用统一 diff 风格。
   2. 删除行必须以 - 开头。
   3. 新增行必须以 + 开头。
   4. 上下文行以空格开头。
-  5. 每个文档只输出一个 unifiedDiff 字符串。
-  6. 如果不需要删除内容，不要编造删除行。
-  7. 如果不需要新增文档，newDocs 返回 []。
-  8. affectedDocs 里必须包含需要修改的中文文档；如果存在对应英文关联文档，也作为单独文档对象加入 affectedDocs。`;
+  5. 每个现有文档只输出一个 unifiedDiff 字符串。
+  6. diff 必须至少包含被修改内容所在模块或小节的完整上下文，不要只输出孤立的一两句话。
+  7. 如果只需要新增内容，也必须在 diff 中保留建议插入位置前后的原文上下文。
+  8. 如果不需要删除内容，不要编造删除行。
+  9. 禁止输出 Markdown 图片语法，例如 ![图片](https://...)。
+  10. 禁止输出真实图片 URL。
+  11. 需要图片时统一使用图片占位符，例如：[图片占位符：功能入口]、[图片占位符：配置页面]、[图片占位符：操作结果]。
+
+  newDocs 规则：
+  1. newDocs 只放建议新增的独立文档。
+  2. 只有当新功能不适合放进现有候选文档时，才建议新增文档。
+  3. 如果没有建议新增文档，newDocs 返回 []。
+  4. 新增文档必须包含 title、category、language、reason、content。
+  5. content 必须是完整可发布的帮助中心文档。
+  6. content 必须参考现有帮助中心文档的标题层级、结构、语气和写作风格。
+  7. content 如涉及界面操作，必须使用图片占位符，不要使用真实图片 URL。`;
 
   const userPrompt = `以下是从当前帮助中心 ${allDocuments.length} 篇文档中预检索出的 ${searchableCandidateDocuments.length} 篇中文候选文档：
 
