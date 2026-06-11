@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { streamDeepSeekChatCompletion, type DeepSeekModel } from "@/lib/deepseek-client";
 import { helpDocuments, type HelpDocument } from "@/lib/documents";
+import { getSupabaseClient } from "@/storage/database/supabase-client";
 
 export const maxDuration = 60;
 
@@ -205,6 +206,34 @@ const ENGLISH_STOP_WORDS = new Set([
   "support",
 ]);
 
+async function loadSupabaseDocuments(): Promise<HelpDocument[]> {
+  const client = getSupabaseClient();
+  const { data, error } = await client
+    .from("help_documents")
+    .select("id, title, category, last_updated, content, source_url, html_content, language, linked_doc_id")
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new Error(`查询帮助文档失败: ${error.message}`);
+  }
+
+  return (data || [])
+    .map((doc: Record<string, unknown>) =>
+      normalizeDocumentPayload({
+        id: doc.id,
+        title: doc.title,
+        category: doc.category,
+        last_updated: doc.last_updated,
+        content: doc.content,
+        sourceUrl: doc.source_url,
+        htmlContent: doc.html_content,
+        language: doc.language,
+        linked_doc_id: doc.linked_doc_id,
+      } as DocumentPayload)
+    )
+    .filter((doc): doc is HelpDocument => Boolean(doc));
+}
+
 export async function POST(request: NextRequest) {
   const { feature, documents, includeFinalContent, model } = (await request.json()) as AnalyzeRequestBody;
   const shouldGenerateFinalContent = includeFinalContent === true;
@@ -223,7 +252,21 @@ export async function POST(request: NextRequest) {
         .filter((doc): doc is HelpDocument => Boolean(doc))
     : [];
 
-  const allDocuments = customDocuments.length > 0 ? customDocuments : helpDocuments;
+  let supabaseDocuments: HelpDocument[] = [];
+  if (customDocuments.length === 0) {
+    try {
+      supabaseDocuments = await loadSupabaseDocuments();
+    } catch {
+      supabaseDocuments = [];
+    }
+  }
+
+  const allDocuments =
+    customDocuments.length > 0
+      ? customDocuments
+      : supabaseDocuments.length > 0
+        ? supabaseDocuments
+        : helpDocuments;
   const zhDocuments = allDocuments.filter((doc) => getDocumentLanguage(doc) === "zh");
   const searchableDocuments = zhDocuments.length > 0 ? zhDocuments : allDocuments;
   const retrievalResult = selectCandidateDocuments(searchableDocuments, feature.trim());

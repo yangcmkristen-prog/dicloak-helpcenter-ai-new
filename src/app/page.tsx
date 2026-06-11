@@ -860,7 +860,6 @@ export default function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           feature: feature.trim(),
-          documents: helpDocs,
           includeFinalContent,
           model: analyzeModel,
         }),
