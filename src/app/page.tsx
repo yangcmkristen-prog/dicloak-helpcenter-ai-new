@@ -16,8 +16,6 @@ import {
   FileText,
   Search,
   Loader2,
-  Trash2,
-  Plus,
   BookOpen,
   ChevronRight,
   Sparkles,
@@ -41,8 +39,22 @@ interface DocumentChange {
 interface AffectedDoc {
   docId: string;
   docName: string;
+  language?: "zh" | "en" | "unknown";
+  linkedFromDocId?: string | null;
   reason: string;
-  changes: DocumentChange[];
+  insertPosition?: string;
+  deleteSummary?: string;
+  addSummary?: string;
+  unifiedDiff?: string;
+  changes?: DocumentChange[];
+}
+
+interface SuggestedNewDoc {
+  title: string;
+  category: string;
+  language?: "zh" | "en" | "unknown";
+  reason: string;
+  content: string;
 }
 
 interface DocDetail {
@@ -297,136 +309,40 @@ function renderHtmlDocument(htmlContent: string) {
 }
 
 // Render document with highlighted changes
-function renderDocumentWithChanges(
-  content: string,
-  changes: DocumentChange[]
-) {
-  if (changes.length === 0) {
-    return <pre className="whitespace-pre-wrap text-sm leading-relaxed">{content}</pre>;
-  }
 
-  // Sort changes: deletions first, then additions
-  const deletions = changes.filter((c) => c.type === "delete");
-  const additions = changes.filter((c) => c.type === "add");
-
-  // Split content into segments based on deletions
-  let remaining = content;
-  const segments: { type: "text" | "delete"; content: string }[] = [];
-
-  // Process deletions - find and mark deleted text
-  for (const del of deletions) {
-    if (del.originalText && remaining.includes(del.originalText)) {
-      const idx = remaining.indexOf(del.originalText);
-      if (idx > 0) {
-        segments.push({ type: "text", content: remaining.substring(0, idx) });
-      }
-      segments.push({ type: "delete", content: del.originalText });
-      remaining = remaining.substring(idx + del.originalText.length);
-    }
-  }
-  if (remaining) {
-    segments.push({ type: "text", content: remaining });
-  }
-
-  // If no deletions found in text, show full content
-  if (segments.length === 0) {
-    segments.push({ type: "text", content });
+function renderUnifiedDiff(diff?: string) {
+  if (!diff?.trim()) {
+    return (
+      <div className="rounded-lg border border-stone-200 bg-stone-50 p-4 text-sm text-stone-500">
+        暂无 diff 内容
+      </div>
+    );
   }
 
   return (
-    <div className="space-y-1">
-      {segments.map((seg, i) => {
-        // Check if there are additions to insert before this segment
-        const additionsBefore: DocumentChange[] = [];
-        const additionsAfter: DocumentChange[] = [];
-
-        for (const add of additions) {
-          if (
-            add.position === "before" &&
-            seg.type === "text" &&
-            add.referenceText &&
-            seg.content.includes(add.referenceText)
-          ) {
-            additionsBefore.push(add);
-          }
-          if (
-            (add.position === "after" || !add.position) &&
-            ((add.referenceText && seg.type === "text" && seg.content.includes(add.referenceText)) ||
-              (!add.referenceText && seg.type === "text" && i === segments.length - 1))
-          ) {
-            additionsAfter.push(add);
-          }
-        }
+    <div className="overflow-hidden rounded-lg border border-stone-200 bg-white font-mono text-sm">
+      {diff.split("\n").map((line, index) => {
+        const isDelete = line.startsWith("-") && !line.startsWith("---");
+        const isAdd = line.startsWith("+") && !line.startsWith("+++");
+        const isHeader = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@");
 
         return (
-          <div key={i}>
-            {additionsBefore.map((add, j) => (
-              <div
-                key={`add-before-${i}-${j}`}
-                className="my-2 rounded-md border border-green-300 bg-green-50 p-3"
-              >
-                <div className="mb-1.5 flex items-center gap-1.5">
-                  <Plus className="h-3.5 w-3.5 text-green-600" />
-                  <span className="text-xs font-medium text-green-700">
-                    新增内容
-                  </span>
-                </div>
-                <div className="whitespace-pre-wrap text-sm leading-relaxed text-green-900">
-                  {add.newContent}
-                </div>
-                {add.reason && (
-                  <div className="mt-1.5 border-t border-green-200 pt-1.5 text-xs text-green-600">
-                    原因：{add.reason}
-                  </div>
-                )}
-              </div>
-            ))}
-
-            {seg.type === "delete" ? (
-              <div className="my-2 rounded-md border border-red-300 bg-red-50 p-3">
-                <div className="mb-1.5 flex items-center gap-1.5">
-                  <Trash2 className="h-3.5 w-3.5 text-red-600" />
-                  <span className="text-xs font-medium text-red-700">
-                    需删除
-                  </span>
-                </div>
-                <div className="whitespace-pre-wrap text-sm leading-relaxed text-red-900 line-through decoration-red-400 decoration-2">
-                  {seg.content}
-                </div>
-                {deletions.find((d) => d.originalText === seg.content)?.reason && (
-                  <div className="mt-1.5 border-t border-red-200 pt-1.5 text-xs text-red-600">
-                    原因：
-                    {deletions.find((d) => d.originalText === seg.content)?.reason}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <pre className="whitespace-pre-wrap text-sm leading-relaxed">
-                {seg.content}
-              </pre>
-            )}
-
-            {additionsAfter.map((add, j) => (
-              <div
-                key={`add-after-${i}-${j}`}
-                className="my-2 rounded-md border border-green-300 bg-green-50 p-3"
-              >
-                <div className="mb-1.5 flex items-center gap-1.5">
-                  <Plus className="h-3.5 w-3.5 text-green-600" />
-                  <span className="text-xs font-medium text-green-700">
-                    新增内容
-                  </span>
-                </div>
-                <div className="whitespace-pre-wrap text-sm leading-relaxed text-green-900">
-                  {add.newContent}
-                </div>
-                {add.reason && (
-                  <div className="mt-1.5 border-t border-green-200 pt-1.5 text-xs text-green-600">
-                    原因：{add.reason}
-                  </div>
-                )}
-              </div>
-            ))}
+          <div
+            key={`${index}-${line}`}
+            className={[
+              "grid grid-cols-[56px_1fr] border-b border-stone-100 last:border-b-0",
+              isDelete ? "bg-red-50 text-red-900" : "",
+              isAdd ? "bg-green-50 text-green-900" : "",
+              isHeader ? "bg-stone-100 text-stone-600" : "",
+              !isDelete && !isAdd && !isHeader ? "bg-white text-stone-700" : "",
+            ].join(" ")}
+          >
+            <div className="select-none border-r border-stone-200 px-2 py-1 text-right text-xs text-stone-400">
+              {index + 1}
+            </div>
+            <pre className="overflow-x-auto whitespace-pre-wrap px-3 py-1 leading-6">
+              {line || " "}
+            </pre>
           </div>
         );
       })}
@@ -440,13 +356,12 @@ export default function HomePage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeModel, setAnalyzeModel] = useState<AnalyzeModel>("deepseek-v4-flash");
   const [affectedDocs, setAffectedDocs] = useState<AffectedDoc[]>([]);
+  const [suggestedNewDocs, setSuggestedNewDocs] = useState<SuggestedNewDoc[]>([]);
+  const [selectedAffectedDocId, setSelectedAffectedDocId] = useState<string | null>(null);
   const [streamingText, setStreamingText] = useState("");
   const [analysisMarkdown, setAnalysisMarkdown] = useState("");
   const [includeFinalContent, setIncludeFinalContent] = useState(false);
   const [retrievalStats, setRetrievalStats] = useState<RetrievalStats | null>(null);
-  const [selectedDoc, setSelectedDoc] = useState<AffectedDoc | null>(null);
-  const [docDetail, setDocDetail] = useState<DocDetail | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [helpDocs, setHelpDocs] = useState<DocDetail[]>([]);
   const [urlInput, setUrlInput] = useState("");
@@ -849,6 +764,8 @@ export default function HomePage() {
 
     setAnalyzing(true);
     setAffectedDocs([]);
+    setSuggestedNewDocs([]);
+    setSelectedAffectedDocId(null);
     setStreamingText("");
     setAnalysisMarkdown("");
     setRetrievalStats(null);
@@ -909,8 +826,34 @@ export default function HomePage() {
                 break;
               }
               if (data.done) {
-                setAnalysisMarkdown(fullText.trim());
-                setActiveTab("analyze");
+                try {
+                  let jsonStr = fullText.trim();
+                  const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+                  if (jsonMatch) {
+                    jsonStr = jsonMatch[1].trim();
+                  }
+
+                  const braceStart = jsonStr.indexOf("{");
+                  const braceEnd = jsonStr.lastIndexOf("}");
+                  if (braceStart !== -1 && braceEnd > braceStart) {
+                    jsonStr = jsonStr.substring(braceStart, braceEnd + 1);
+                  }
+
+                  const result = JSON.parse(jsonStr) as {
+                    affectedDocs?: AffectedDoc[];
+                    newDocs?: SuggestedNewDoc[];
+                  };
+
+                  const nextAffectedDocs = Array.isArray(result.affectedDocs) ? result.affectedDocs : [];
+                  const nextNewDocs = Array.isArray(result.newDocs) ? result.newDocs : [];
+
+                  setAffectedDocs(nextAffectedDocs);
+                  setSuggestedNewDocs(nextNewDocs);
+                  setSelectedAffectedDocId(nextAffectedDocs[0]?.docId ?? null);
+                  setActiveTab("analyze");
+                } catch {
+                  setError("AI 返回格式异常，请重试");
+                }
               }
               if (data.content) {
                 fullText += data.content;
@@ -930,38 +873,6 @@ export default function HomePage() {
       setAnalyzing(false);
     }
   }, [feature, helpDocs, includeFinalContent, analyzeModel]);
-
-  const handleDocClick = useCallback(async (doc: AffectedDoc) => {
-    setSelectedDoc(doc);
-    setDrawerOpen(true);
-
-    const uploadedDoc = helpDocs.find((helpDoc) => helpDoc.id === doc.docId);
-    if (uploadedDoc) {
-      setDocDetail(uploadedDoc);
-      return;
-    }
-
-    setDocDetail(null);
-    try {
-      const response = await fetch("/api/documents", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: doc.docId }),
-      });
-      const data = await response.json();
-      if (data.document) {
-        setDocDetail(data.document);
-      }
-    } catch {
-      // Fallback - still show changes
-    }
-  }, [helpDocs]);
-
-  const getChangeStats = (doc: AffectedDoc) => {
-    const deletes = doc.changes.filter((c) => c.type === "delete").length;
-    const adds = doc.changes.filter((c) => c.type === "add").length;
-    return { deletes, adds };
-  };
 
   const totalCharacters = helpDocs.reduce((sum, doc) => sum + doc.content.length, 0);
   const normalizedDocSearch = docSearch.trim().toLowerCase();
@@ -1509,75 +1420,150 @@ export default function HomePage() {
 
             {/* Results */}
             {affectedDocs.length > 0 && !analyzing && (
-              <section>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-lg font-semibold text-stone-900">
-                      已上传文档
-                    </h2>
-                    {syncing && (
-                      <Badge variant="secondary" className="gap-1 text-xs">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        同步中
-                      </Badge>
-                    )}
+              <section className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
+                <div className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
+                  <h2 className="mb-3 text-base font-semibold text-stone-900">
+                    AI 建议修改的文档
+                  </h2>
+
+                  <div className="grid gap-2">
+                    {affectedDocs.map((doc) => {
+                      const isSelected = (selectedAffectedDocId ?? affectedDocs[0]?.docId) === doc.docId;
+                      const deleteCount = doc.unifiedDiff?.split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---")).length ?? 0;
+                      const addCount = doc.unifiedDiff?.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++")).length ?? 0;
+
+                      return (
+                        <button
+                          key={`${doc.docId}-${doc.language ?? "unknown"}`}
+                          type="button"
+                          onClick={() => setSelectedAffectedDocId(doc.docId)}
+                          className={[
+                            "rounded-lg border p-3 text-left transition-colors",
+                            isSelected ? "border-teal-300 bg-teal-50" : "border-stone-200 bg-white hover:border-teal-200 hover:bg-teal-50/40",
+                          ].join(" ")}
+                        >
+                          <div className="mb-1 flex items-center gap-2">
+                            <FileText className="h-4 w-4 shrink-0 text-stone-400" />
+                            <span className="min-w-0 flex-1 truncate text-sm font-medium text-stone-900">
+                              {doc.docName}
+                            </span>
+                            {doc.language && (
+                              <Badge variant="secondary" className="shrink-0 text-[10px]">
+                                {doc.language === "zh" ? "中文" : doc.language === "en" ? "English" : "未知"}
+                              </Badge>
+                            )}
+                          </div>
+                          <p className="line-clamp-2 text-xs text-stone-500">
+                            {doc.reason}
+                          </p>
+                          <div className="mt-2 flex items-center gap-2">
+                            {deleteCount > 0 && (
+                              <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs text-red-600">
+                                -{deleteCount}
+                              </span>
+                            )}
+                            {addCount > 0 && (
+                              <span className="rounded-full bg-green-50 px-2 py-0.5 text-xs text-green-600">
+                                +{addCount}
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
-                  <p className="mt-1 text-sm text-stone-500">
-                    共 {helpDocs.length} 篇，约 {totalCharacters.toLocaleString()} 字符
-                  </p>
                 </div>
 
-                <div className="grid gap-4">
-                  {affectedDocs.map((doc) => {
-                    const stats = getChangeStats(doc);
+                <div className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
+                  {(() => {
+                    const selectedDoc = affectedDocs.find((doc) => doc.docId === (selectedAffectedDocId ?? affectedDocs[0]?.docId)) ?? affectedDocs[0];
+                    const originalDoc = helpDocs.find((doc) => doc.id === selectedDoc.docId);
+
                     return (
-                      <button
-                        key={doc.docId}
-                        onClick={() => handleDocClick(doc)}
-                        className="group w-full rounded-xl border border-stone-200 bg-white p-5 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-md"
-                      >
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="min-w-0 flex-1">
-                            <div className="mb-2 flex items-center gap-2">
-                              <FileText className="h-4 w-4 text-stone-400" />
-                              <span className="font-medium text-stone-900">
-                                {doc.docName}
-                              </span>
-                              <Badge
-                                variant="outline"
-                                className="shrink-0 text-[10px] text-stone-400"
-                              >
-                                {doc.docId}
-                              </Badge>
+                      <div className="grid gap-4">
+                        <div>
+                          <div className="mb-2 flex items-center justify-between gap-3">
+                            <div>
+                              <h2 className="text-base font-semibold text-stone-900">
+                                {selectedDoc.docName}
+                              </h2>
+                              <p className="mt-1 text-xs text-stone-500">
+                                {selectedDoc.reason}
+                              </p>
                             </div>
-                            <p className="mb-3 text-sm text-stone-500">
-                              {doc.reason}
-                            </p>
-                            <div className="flex items-center gap-3">
-                              {stats.deletes > 0 && (
-                                <div className="flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-0.5">
-                                  <Trash2 className="h-3 w-3 text-red-500" />
-                                  <span className="text-xs font-medium text-red-600">
-                                    删除 {stats.deletes} 处
-                                  </span>
-                                </div>
-                              )}
-                              {stats.adds > 0 && (
-                                <div className="flex items-center gap-1 rounded-full bg-green-50 px-2.5 py-0.5">
-                                  <Plus className="h-3 w-3 text-green-500" />
-                                  <span className="text-xs font-medium text-green-600">
-                                    新增 {stats.adds} 处
-                                  </span>
-                                </div>
+                            {selectedDoc.language && (
+                              <Badge variant="secondary">
+                                {selectedDoc.language === "zh" ? "中文" : selectedDoc.language === "en" ? "English" : "未知"}
+                              </Badge>
+                            )}
+                          </div>
+
+                          <div className="grid gap-2 rounded-lg border border-stone-200 bg-stone-50 p-3 text-sm text-stone-700">
+                            <div>
+                              <span className="font-medium text-stone-900">建议插入位置：</span>
+                              {selectedDoc.insertPosition || "未指定"}
+                            </div>
+                            <div>
+                              <span className="font-medium text-stone-900">建议删除内容：</span>
+                              {selectedDoc.deleteSummary || "无"}
+                            </div>
+                            <div>
+                              <span className="font-medium text-stone-900">建议新增内容：</span>
+                              {selectedDoc.addSummary || "无"}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid gap-4 xl:grid-cols-2">
+                          <div>
+                            <h3 className="mb-2 text-sm font-semibold text-stone-900">
+                              原文预览
+                            </h3>
+                            <div className="max-h-[720px] overflow-auto rounded-lg border border-stone-200 bg-white p-4">
+                              {originalDoc ? renderFormattedDocument(originalDoc.content) : (
+                                <p className="text-sm text-stone-400">
+                                  未找到原文内容
+                                </p>
                               )}
                             </div>
                           </div>
-                          <ChevronRight className="mt-1 h-5 w-5 text-stone-300 transition-colors group-hover:text-teal-500" />
+
+                          <div>
+                            <h3 className="mb-2 text-sm font-semibold text-stone-900">
+                              AI 建议 diff
+                            </h3>
+                            <div className="max-h-[720px] overflow-auto">
+                              {renderUnifiedDiff(selectedDoc.unifiedDiff)}
+                            </div>
+                          </div>
                         </div>
-                      </button>
+                      </div>
                     );
-                  })}
+                  })()}
                 </div>
+
+                {suggestedNewDocs.length > 0 && (
+                  <div className="lg:col-span-2 rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
+                    <h2 className="mb-3 text-base font-semibold text-stone-900">
+                      建议新增的文档
+                    </h2>
+                    <div className="grid gap-3">
+                      {suggestedNewDocs.map((doc) => (
+                        <div key={`${doc.title}-${doc.language ?? "unknown"}`} className="rounded-lg border border-stone-200 bg-stone-50 p-4">
+                          <div className="mb-2 flex items-center gap-2">
+                            <h3 className="font-medium text-stone-900">{doc.title}</h3>
+                            <Badge variant="outline">{doc.category}</Badge>
+                            {doc.language && <Badge variant="secondary">{doc.language}</Badge>}
+                          </div>
+                          <p className="mb-3 text-sm text-stone-500">{doc.reason}</p>
+                          <pre className="whitespace-pre-wrap rounded-md bg-white p-3 text-sm leading-6 text-stone-700">
+                            {doc.content}
+                          </pre>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </section>
             )}
 
@@ -1761,137 +1747,6 @@ export default function HomePage() {
                       ? renderHtmlDocument(previewDoc.htmlContent)
                       : renderFormattedDocument(previewDoc.content)}
                   </div>
-                </div>
-              </ScrollArea>
-            </>
-          )}
-        </SheetContent>
-      </Sheet>
-
-      {/* Document Detail Drawer */}
-      <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
-        <SheetContent
-          side="right"
-          className="w-[700px] max-w-[90vw] sm:max-w-[700px] overflow-hidden p-0"
-        >
-          {selectedDoc && (
-            <>
-              <SheetHeader className="border-b border-stone-200 px-6 py-4">
-                <SheetTitle className="flex items-center gap-2 text-lg">
-                  <FileText className="h-5 w-5 text-teal-600" />
-                  {selectedDoc.docName}
-                </SheetTitle>
-                <SheetDescription className="text-left">
-                  {selectedDoc.reason}
-                </SheetDescription>
-                <div className="mt-2 flex items-center gap-3">
-                  {getChangeStats(selectedDoc).deletes > 0 && (
-                    <div className="flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1">
-                      <Trash2 className="h-3.5 w-3.5 text-red-500" />
-                      <span className="text-xs font-medium text-red-600">
-                        需删除 {getChangeStats(selectedDoc).deletes} 处
-                      </span>
-                    </div>
-                  )}
-                  {getChangeStats(selectedDoc).adds > 0 && (
-                    <div className="flex items-center gap-1.5 rounded-full bg-green-50 px-3 py-1">
-                      <Plus className="h-3.5 w-3.5 text-green-500" />
-                      <span className="text-xs font-medium text-green-600">
-                        需新增 {getChangeStats(selectedDoc).adds} 处
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </SheetHeader>
-
-              <ScrollArea className="h-[calc(100vh-200px)]">
-                <div className="px-6 py-5">
-                  {/* Change Details */}
-                  <div className="mb-6">
-                    <h3 className="mb-3 text-sm font-semibold text-stone-700">
-                      修改详情
-                    </h3>
-                    <div className="space-y-3">
-                      {selectedDoc.changes.map((change, i) => (
-                        <div
-                          key={i}
-                          className={`rounded-lg border p-4 ${
-                            change.type === "delete"
-                              ? "border-red-200 bg-red-50/50"
-                              : "border-green-200 bg-green-50/50"
-                          }`}
-                        >
-                          <div className="mb-2 flex items-center gap-2">
-                            {change.type === "delete" ? (
-                              <Trash2 className="h-4 w-4 text-red-500" />
-                            ) : (
-                              <Plus className="h-4 w-4 text-green-500" />
-                            )}
-                            <span
-                              className={`text-sm font-medium ${
-                                change.type === "delete"
-                                  ? "text-red-700"
-                                  : "text-green-700"
-                              }`}
-                            >
-                              {change.type === "delete" ? "删除内容" : "新增内容"}
-                            </span>
-                            {change.position && (
-                              <Badge
-                                variant="outline"
-                                className="text-[10px]"
-                              >
-                                {change.position === "after"
-                                  ? "在引用文本之后"
-                                  : change.position === "before"
-                                  ? "在引用文本之前"
-                                  : "替换"}
-                              </Badge>
-                            )}
-                          </div>
-                          {change.type === "delete" && change.originalText && (
-                            <div className="mb-2 rounded bg-white p-3 text-sm text-red-800 line-through">
-                              {change.originalText}
-                            </div>
-                          )}
-                          {change.type === "add" && (
-                            <div className="mb-2 rounded bg-white p-3 text-sm text-green-800">
-                              {change.newContent}
-                            </div>
-                          )}
-                          {change.referenceText && (
-                            <div className="mb-1 text-xs text-stone-400">
-                              定位参考：「{change.referenceText}」
-                            </div>
-                          )}
-                          <div className="text-xs text-stone-500">
-                            原因：{change.reason}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Full Document with Highlights */}
-                  {docDetail && (
-                    <div>
-                      <h3 className="mb-3 text-sm font-semibold text-stone-700">
-                        文档全文（含标注）
-                      </h3>
-                      <div className="rounded-lg border border-stone-200 bg-white p-5">
-                        {renderDocumentWithChanges(
-                          docDetail.content,
-                          selectedDoc.changes
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {!docDetail && (
-                    <div className="rounded-lg border border-stone-200 bg-white p-5 text-center text-sm text-stone-400">
-                      文档原文加载中...
-                    </div>
-                  )}
                 </div>
               </ScrollArea>
             </>
