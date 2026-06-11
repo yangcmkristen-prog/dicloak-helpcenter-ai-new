@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { streamDeepSeekChatCompletion } from "@/lib/deepseek-client";
+import { streamDeepSeekChatCompletion, type DeepSeekModel } from "@/lib/deepseek-client";
 import { helpDocuments, type HelpDocument } from "@/lib/documents";
 
 export const maxDuration = 60;
@@ -11,6 +11,7 @@ interface AnalyzeRequestBody {
   feature?: unknown;
   documents?: unknown;
   includeFinalContent?: unknown;
+  model?: unknown;
 }
 
 interface DocumentPayload {
@@ -178,6 +179,10 @@ function normalizeDocumentPayload(doc: DocumentPayload): HelpDocument | null {
   return null;
 }
 
+function normalizeDeepSeekModel(model: unknown): DeepSeekModel {
+  return model === "deepseek-v4-pro" ? "deepseek-v4-pro" : "deepseek-v4-flash";
+}
+
 const ENGLISH_STOP_WORDS = new Set([
   "the",
   "and",
@@ -201,8 +206,9 @@ const ENGLISH_STOP_WORDS = new Set([
 ]);
 
 export async function POST(request: NextRequest) {
-  const { feature, documents, includeFinalContent } = (await request.json()) as AnalyzeRequestBody;
+  const { feature, documents, includeFinalContent, model } = (await request.json()) as AnalyzeRequestBody;
   const shouldGenerateFinalContent = includeFinalContent === true;
+  const selectedModel = normalizeDeepSeekModel(model);
 
   if (!feature || typeof feature !== "string" || feature.trim().length === 0) {
     return new Response(JSON.stringify({ error: "请输入新功能描述" }), {
@@ -388,6 +394,7 @@ export async function POST(request: NextRequest) {
 
         const llmStream = streamDeepSeekChatCompletion({
           messages,
+          model: selectedModel,
           temperature: 0.3,
           responseFormat: "text",
         });

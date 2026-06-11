@@ -1,4 +1,5 @@
 type ChatRole = "system" | "user" | "assistant";
+export type DeepSeekModel = "deepseek-v4-flash" | "deepseek-v4-pro";
 
 export interface ChatMessage {
   role: ChatRole;
@@ -7,7 +8,7 @@ export interface ChatMessage {
 
 interface DeepSeekStreamOptions {
   messages: ChatMessage[];
-  model?: string;
+  model?: DeepSeekModel;
   temperature?: number;
   responseFormat?: "text" | "json_object";
 }
@@ -28,7 +29,7 @@ interface DeepSeekStreamChunk {
 }
 
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
-const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
+const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
 
 function getDeepSeekApiKey() {
   const apiKey = process.env.DEEPSEEK_API_KEY;
@@ -44,8 +45,18 @@ function getDeepSeekBaseUrl() {
   return (process.env.DEEPSEEK_BASE_URL || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/$/, "");
 }
 
-function getDeepSeekModel(model?: string) {
-  return model || process.env.DEEPSEEK_MODEL || DEFAULT_DEEPSEEK_MODEL;
+function getDeepSeekModel(model?: DeepSeekModel): DeepSeekModel {
+  const envModel = process.env.DEEPSEEK_MODEL;
+
+  if (model === "deepseek-v4-flash" || model === "deepseek-v4-pro") {
+    return model;
+  }
+
+  if (envModel === "deepseek-v4-flash" || envModel === "deepseek-v4-pro") {
+    return envModel;
+  }
+
+  return DEFAULT_DEEPSEEK_MODEL;
 }
 
 function parseDeepSeekChunk(line: string) {

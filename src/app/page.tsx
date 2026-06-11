@@ -78,6 +78,7 @@ interface ImportSiteResponse {
 
 type ActiveTab = "help-center" | "analyze";
 type LanguageFilter = "all" | "zh" | "en" | "unknown";
+type AnalyzeModel = "deepseek-v4-flash" | "deepseek-v4-pro";
 
 const SUPPORTED_FILE_EXTENSIONS = [".md", ".txt"];
 const DOCS_PER_PAGE = 10;
@@ -437,6 +438,7 @@ export default function HomePage() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("help-center");
   const [feature, setFeature] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeModel, setAnalyzeModel] = useState<AnalyzeModel>("deepseek-v4-flash");
   const [affectedDocs, setAffectedDocs] = useState<AffectedDoc[]>([]);
   const [streamingText, setStreamingText] = useState("");
   const [analysisMarkdown, setAnalysisMarkdown] = useState("");
@@ -860,11 +862,22 @@ export default function HomePage() {
           feature: feature.trim(),
           documents: helpDocs,
           includeFinalContent,
+          model: analyzeModel,
         }),
       });
 
       if (!response.ok) {
-        throw new Error("分析请求失败");
+        const errorText = await response.text();
+        let message = "分析请求失败";
+
+        try {
+          const errorData = JSON.parse(errorText) as { error?: string };
+          message = errorData.error || message;
+        } catch {
+          message = errorText || message;
+        }
+
+        throw new Error(message);
       }
 
       const reader = response.body?.getReader();
@@ -917,7 +930,7 @@ export default function HomePage() {
     } finally {
       setAnalyzing(false);
     }
-  }, [feature, helpDocs, includeFinalContent]);
+  }, [feature, helpDocs, includeFinalContent, analyzeModel]);
 
   const handleDocClick = useCallback(async (doc: AffectedDoc) => {
     setSelectedDoc(doc);
@@ -1393,37 +1406,51 @@ export default function HomePage() {
                   onChange={(e) => setFeature(e.target.value)}
                   disabled={analyzing}
                 />
-                <div className="mt-4 flex items-center justify-between">
+                <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                   <p className="text-xs text-stone-400">
-                    将先从 {helpDocs.length} 篇帮助文档中预检索最多 30 篇候选文档，再交给 AI 分析，降低 token 消耗
+                    将先从 {helpDocs.length} 篇帮助文档中预检索最多 12 篇中文候选文档，并只附带这些中文文档关联的英文文档，再交给 AI 分析，降低 token 消耗
                   </p>
-                  <Button
-                    onClick={handleAnalyze}
-                    disabled={!feature.trim() || analyzing || helpDocs.length === 0}
-                    className="bg-teal-600 hover:bg-teal-700"
-                  >
-                  <label className="mt-3 flex items-center gap-2 text-sm text-stone-600">
-                    <input
-                      type="checkbox"
-                      checked={includeFinalContent}
-                      onChange={(event) => setIncludeFinalContent(event.target.checked)}
+
+                  <div className="flex flex-col gap-2 sm:items-end">
+                    <select
+                      value={analyzeModel}
+                      onChange={(event) => setAnalyzeModel(event.target.value as AnalyzeModel)}
                       disabled={analyzing}
-                      className="h-4 w-4 rounded border-stone-300"
-                    />
-                    生成完整最终文档内容（会增加 AI 输出 token 和费用）
-                  </label>
-                    {analyzing ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        正在分析...
-                      </>
-                    ) : (
-                      <>
-                        <Search className="mr-2 h-4 w-4" />
-                        开始分析
-                      </>
-                    )}
-                  </Button>
+                      className="rounded-md border border-stone-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none transition-colors focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                    >
+                      <option value="deepseek-v4-flash">DeepSeek V4 Flash（默认，成本低）</option>
+                      <option value="deepseek-v4-pro">DeepSeek V4 Pro（质量更高）</option>
+                    </select>
+
+                    <label className="flex items-center gap-2 text-sm text-stone-600">
+                      <input
+                        type="checkbox"
+                        checked={includeFinalContent}
+                        onChange={(event) => setIncludeFinalContent(event.target.checked)}
+                        disabled={analyzing}
+                        className="h-4 w-4 rounded border-stone-300"
+                      />
+                      生成完整最终文档内容（会增加 AI 输出 token 和费用）
+                    </label>
+
+                    <Button
+                      onClick={handleAnalyze}
+                      disabled={!feature.trim() || analyzing || helpDocs.length === 0}
+                      className="bg-teal-600 hover:bg-teal-700"
+                    >
+                      {analyzing ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          正在分析...
+                        </>
+                      ) : (
+                        <>
+                          <Search className="mr-2 h-4 w-4" />
+                          开始分析
+                        </>
+                      )}
+                    </Button>
+                  </div>
                 </div>
                 {helpDocs.length === 0 && (
                   <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
