@@ -23,6 +23,9 @@ import {
   Upload,
   FileUp,
   CheckCircle2,
+  History,
+  Image as ImageIcon,
+  X,
   Link as LinkIcon,
 } from "lucide-react";
 
@@ -88,6 +91,25 @@ interface ImportSiteResponse {
   nextCursor?: string | null;
 }
 
+interface AnalyzeImageAttachment {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  dataUrl: string;
+}
+
+interface AnalysisHistoryRecord {
+  id: string;
+  feature: string;
+  createdAt: string;
+  model: AnalyzeModel;
+  imageNames: string[];
+  affectedDocs: AffectedDoc[];
+  suggestedNewDocs: SuggestedNewDoc[];
+  retrievalStats: RetrievalStats | null;
+}
+
 type ActiveTab = "help-center" | "analyze";
 type LanguageFilter = "all" | "zh" | "en" | "unknown";
 type AnalyzeModel = "deepseek-v4-flash" | "deepseek-v4-pro";
@@ -95,9 +117,74 @@ type AnalyzeModel = "deepseek-v4-flash" | "deepseek-v4-pro";
 const SUPPORTED_FILE_EXTENSIONS = [".md", ".txt"];
 const DOCS_PER_PAGE = 10;
 
+const ANALYSIS_HISTORY_STORAGE_KEY = "dicloak-analysis-history";
+const MAX_ANALYSIS_HISTORY = 50;
+const MAX_ANALYZE_IMAGES = 8;
+
 function isSupportedHelpDocument(file: File) {
   const lowerName = file.name.toLowerCase();
   return SUPPORTED_FILE_EXTENSIONS.some((extension) => lowerName.endsWith(extension));
+}
+
+function isSupportedAnalyzeImage(file: File) {
+  return file.type.startsWith("image/");
+}
+
+function fileToDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+      } else {
+        reject(new Error("图片读取结果异常"));
+      }
+    };
+    reader.onerror = () => reject(new Error("图片读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function getHistoryTitle(record: AnalysisHistoryRecord) {
+  const trimmedFeature = record.feature.trim();
+  if (trimmedFeature) return trimmedFeature;
+  if (record.imageNames.length > 0) return `截图分析：${record.imageNames.join("、")}`;
+  return "未命名分析";
+}
+
+function normalizeAnalysisHistoryRecord(rawRecord: unknown): AnalysisHistoryRecord | null {
+  if (!rawRecord || typeof rawRecord !== "object") return null;
+  const record = rawRecord as Record<string, unknown>;
+  const id = getStringField(record.id);
+  const feature = getStringField(record.feature);
+  const createdAt = getStringField(record.createdAt);
+  const model = getStringField(record.model);
+
+  if (!id || feature === undefined || !createdAt || (model !== "deepseek-v4-flash" && model !== "deepseek-v4-pro")) {
+    return null;
+  }
+
+  return {
+    id,
+    feature,
+    createdAt,
+    model,
+    imageNames: Array.isArray(record.imageNames) ? record.imageNames.filter((name): name is string => typeof name === "string") : [],
+    affectedDocs: Array.isArray(record.affectedDocs) ? (record.affectedDocs as AffectedDoc[]) : [],
+    suggestedNewDocs: Array.isArray(record.suggestedNewDocs) ? (record.suggestedNewDocs as SuggestedNewDoc[]) : [],
+    retrievalStats: record.retrievalStats && typeof record.retrievalStats === "object" ? (record.retrievalStats as RetrievalStats) : null,
+  };
 }
 
 function getDocumentTitle(fileName: string, content: string) {
@@ -387,8 +474,37 @@ export default function HomePage() {
   const [linkPreviewDocId, setLinkPreviewDocId] = useState<string | null>(null);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [analyzeImages, setAnalyzeImages] = useState<AnalyzeImageAttachment[]>([]);
+  const [analysisHistory, setAnalysisHistory] = useState<AnalysisHistoryRecord[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const [syncing, setSyncing] = useState(false);
+
+  useEffect(() => {
+    try {
+      const rawHistory = window.localStorage.getItem(ANALYSIS_HISTORY_STORAGE_KEY);
+      const parsedHistory = rawHistory ? JSON.parse(rawHistory) : [];
+      if (Array.isArray(parsedHistory)) {
+        setAnalysisHistory(
+          parsedHistory
+            .map((record) => normalizeAnalysisHistoryRecord(record))
+            .filter((record): record is AnalysisHistoryRecord => Boolean(record))
+            .slice(0, MAX_ANALYSIS_HISTORY)
+        );
+      }
+    } catch {
+      setAnalysisHistory([]);
+    }
+  }, []);
+
+  const persistAnalysisHistory = useCallback((history: AnalysisHistoryRecord[]) => {
+    setAnalysisHistory(history);
+    try {
+      window.localStorage.setItem(ANALYSIS_HISTORY_STORAGE_KEY, JSON.stringify(history));
+    } catch {
+      setError("分析完成，但历史记录保存失败：浏览器本地存储空间不足");
+    }
+  }, []);
 
   // 从 Supabase 加载文档
   useEffect(() => {
@@ -761,8 +877,68 @@ export default function HomePage() {
     setLinkingDoc((currentDoc) => (currentDoc?.id === docId ? null : currentDoc));
   }, [deleteDocFromSupabase, persistDocLinksToSupabase]);
 
+  const handleAnalyzeImageUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(event.target.files ?? []);
+    event.target.value = "";
+
+    if (selectedFiles.length === 0) return;
+
+    const unsupportedFiles = selectedFiles.filter((file) => !isSupportedAnalyzeImage(file));
+    if (unsupportedFiles.length > 0) {
+      setError(`仅支持上传图片文件：${unsupportedFiles.map((file) => file.name).join("、")}`);
+      return;
+    }
+
+    try {
+      const availableSlots = Math.max(0, MAX_ANALYZE_IMAGES - analyzeImages.length);
+      const filesToRead = selectedFiles.slice(0, availableSlots);
+
+      if (filesToRead.length === 0) {
+        setError(`最多支持上传 ${MAX_ANALYZE_IMAGES} 张功能截图`);
+        return;
+      }
+
+      const nextImages = await Promise.all(
+        filesToRead.map(async (file) => ({
+          id: `${file.name}-${file.lastModified}-${crypto.randomUUID()}`,
+          name: file.name,
+          type: file.type || "image/*",
+          size: file.size,
+          dataUrl: await fileToDataUrl(file),
+        } satisfies AnalyzeImageAttachment))
+      );
+
+      setAnalyzeImages((currentImages) => [...currentImages, ...nextImages].slice(0, MAX_ANALYZE_IMAGES));
+      setError(selectedFiles.length > filesToRead.length ? `已添加 ${filesToRead.length} 张截图，最多支持 ${MAX_ANALYZE_IMAGES} 张` : null);
+    } catch {
+      setError("图片读取失败，请重新选择图片后再试");
+    }
+  }, [analyzeImages.length]);
+
+  const handleRemoveAnalyzeImage = useCallback((imageId: string) => {
+    setAnalyzeImages((currentImages) => currentImages.filter((image) => image.id !== imageId));
+  }, []);
+
+  const restoreAnalysisHistory = useCallback((record: AnalysisHistoryRecord) => {
+    setFeature(record.feature);
+    setAnalyzeModel(record.model);
+    setAffectedDocs(record.affectedDocs);
+    setSuggestedNewDocs(record.suggestedNewDocs);
+    setRetrievalStats(record.retrievalStats);
+    setSelectedAffectedDocId(record.affectedDocs[0]?.docId ?? null);
+    setStreamingText("");
+    setError(null);
+    setActiveTab("analyze");
+    setHistoryOpen(false);
+  }, []);
+
+  const clearAnalysisHistory = useCallback(() => {
+    persistAnalysisHistory([]);
+  }, [persistAnalysisHistory]);
+
   const handleAnalyze = useCallback(async () => {
-    if (!feature.trim()) return;
+    const trimmedFeature = feature.trim();
+    if (!trimmedFeature && analyzeImages.length === 0) return;
 
     if (helpDocs.length === 0) {
       setActiveTab("help-center");
@@ -783,8 +959,13 @@ export default function HomePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          feature: feature.trim(),
+          feature: trimmedFeature,
           model: analyzeModel,
+          images: analyzeImages.map((image) => ({
+            name: image.name,
+            type: image.type,
+            dataUrl: image.dataUrl,
+          })),
         }),
       });
 
@@ -807,6 +988,7 @@ export default function HomePage() {
 
       const decoder = new TextDecoder();
       let fullText = "";
+      let latestRetrievalStats: RetrievalStats | null = null;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -825,6 +1007,7 @@ export default function HomePage() {
                 retrieval?: RetrievalStats;
               };
               if (data.retrieval) {
+                latestRetrievalStats = data.retrieval;
                 setRetrievalStats(data.retrieval);
               }
               if (data.error) {
@@ -857,6 +1040,18 @@ export default function HomePage() {
                   setSuggestedNewDocs(nextNewDocs);
                   setSelectedAffectedDocId(nextAffectedDocs[0]?.docId ?? null);
                   setActiveTab("analyze");
+
+                  const nextRecord: AnalysisHistoryRecord = {
+                    id: crypto.randomUUID(),
+                    feature: trimmedFeature,
+                    createdAt: new Date().toISOString(),
+                    model: analyzeModel,
+                    imageNames: analyzeImages.map((image) => image.name),
+                    affectedDocs: nextAffectedDocs,
+                    suggestedNewDocs: nextNewDocs,
+                    retrievalStats: latestRetrievalStats,
+                  };
+                  persistAnalysisHistory([nextRecord, ...analysisHistory].slice(0, MAX_ANALYSIS_HISTORY));
                 } catch {
                   setError("AI 返回格式异常，请重试");
                 }
@@ -878,7 +1073,7 @@ export default function HomePage() {
     } finally {
       setAnalyzing(false);
     }
-  }, [feature, helpDocs, analyzeModel]);
+  }, [feature, analyzeImages, helpDocs, analyzeModel, persistAnalysisHistory, analysisHistory]);
 
   const totalCharacters = helpDocs.reduce((sum, doc) => sum + doc.content.length, 0);
   const normalizedDocSearch = docSearch.trim().toLowerCase();
@@ -1309,19 +1504,94 @@ export default function HomePage() {
                       新功能描述
                     </span>
                   </div>
-                  <Badge variant="secondary" className="text-xs">
-                    {retrievalStats
-                      ? `预检索 ${retrievalStats.candidateDocuments}/${retrievalStats.totalDocuments} 篇`
-                      : `检索 ${helpDocs.length} 篇帮助文档`}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setHistoryOpen(true)}
+                      className="h-8 gap-1.5 text-xs"
+                    >
+                      <History className="h-3.5 w-3.5" />
+                      历史记录
+                      {analysisHistory.length > 0 && (
+                        <span className="rounded-full bg-stone-100 px-1.5 text-[10px] text-stone-500">
+                          {analysisHistory.length}
+                        </span>
+                      )}
+                    </Button>
+                    <Badge variant="secondary" className="text-xs">
+                      {retrievalStats
+                        ? `预检索 ${retrievalStats.candidateDocuments}/${retrievalStats.totalDocuments} 篇`
+                        : `检索 ${helpDocs.length} 篇帮助文档`}
+                    </Badge>
+                  </div>
                 </div>
                 <Textarea
-                  placeholder="请描述即将上线的新功能，例如：新增团队空间功能，支持创建团队空间并邀请成员加入，团队空间内可以共享项目、文档和日程..."
+                  placeholder="请描述即将上线的新功能，例如：新增团队空间功能，支持创建团队空间并邀请成员加入，团队空间内可以共享项目、文档和日程... 也可以只上传功能截图，让 AI 识别界面并撰写描述和步骤。"
                   className="min-h-[140px] resize-none text-base leading-relaxed"
                   value={feature}
                   onChange={(e) => setFeature(e.target.value)}
                   disabled={analyzing}
                 />
+
+                <div className="mt-4 rounded-xl border border-dashed border-stone-200 bg-stone-50 p-4">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <ImageIcon className="h-4 w-4 text-teal-600" />
+                      <div>
+                        <p className="text-sm font-medium text-stone-700">上传功能截图</p>
+                        <p className="text-xs text-stone-400">支持多张图片，AI 会结合截图理解功能设置、字段和操作步骤。</p>
+                      </div>
+                    </div>
+                    <label className={`inline-flex items-center rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-medium text-stone-700 shadow-sm transition-colors ${analyzing ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-stone-50"}`}>
+                      <Upload className="mr-2 h-4 w-4" />
+                      选择图片
+                      <input
+                        type="file"
+                        multiple
+                        accept="image/*"
+                        onChange={handleAnalyzeImageUpload}
+                        disabled={analyzing}
+                        className="sr-only"
+                      />
+                    </label>
+                  </div>
+
+                  {analyzeImages.length > 0 ? (
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      {analyzeImages.map((image) => (
+                        <div key={image.id} className="group overflow-hidden rounded-lg border border-stone-200 bg-white">
+                          <div className="relative aspect-video bg-stone-100">
+                            <div
+                              role="img"
+                              aria-label={image.name}
+                              className="h-full w-full bg-cover bg-center"
+                              style={{ backgroundImage: `url(${image.dataUrl})` }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveAnalyzeImage(image.id)}
+                              disabled={analyzing}
+                              className="absolute right-2 top-2 rounded-full bg-white/90 p-1 text-stone-500 shadow-sm transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                              aria-label={`移除 ${image.name}`}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                          <div className="p-2">
+                            <p className="truncate text-xs font-medium text-stone-700" title={image.name}>{image.name}</p>
+                            <p className="text-[11px] text-stone-400">{(image.size / 1024).toFixed(1)} KB</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-stone-200 bg-white p-4 text-center text-xs text-stone-400">
+                      暂未上传截图；可仅输入文字描述，也可上传截图辅助 AI 撰写功能说明。
+                    </div>
+                  )}
+                </div>
                 <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                   <p className="text-xs text-stone-400">
                     将先从 {helpDocs.length} 篇帮助文档中预检索最多 12 篇中文候选文档，并只附带这些中文文档关联的英文文档，再交给 AI 分析，降低 token 消耗
@@ -1340,7 +1610,7 @@ export default function HomePage() {
 
                     <Button
                       onClick={handleAnalyze}
-                      disabled={!feature.trim() || analyzing || helpDocs.length === 0}
+                      disabled={(!feature.trim() && analyzeImages.length === 0) || analyzing || helpDocs.length === 0}
                       className="bg-teal-600 hover:bg-teal-700"
                     >
                       {analyzing ? (
@@ -1609,7 +1879,7 @@ export default function HomePage() {
                   尚未进行分析
                 </h3>
                 <p className="text-sm text-stone-400">
-                  上传帮助文档并输入新功能描述后，点击「开始分析」查看需要更新的文档
+                  上传帮助文档并输入新功能描述或功能截图后，点击「开始分析」查看需要更新的文档
                 </p>
               </section>
             )}
@@ -1738,6 +2008,97 @@ export default function HomePage() {
               </div>
             </>
           )}
+        </SheetContent>
+      </Sheet>
+
+      {/* Analysis History Drawer */}
+      <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
+        <SheetContent
+          side="right"
+          className="w-[920px] max-w-[94vw] sm:max-w-[920px] overflow-hidden p-0"
+        >
+          <SheetHeader className="border-b border-stone-200 px-6 py-4">
+            <SheetTitle className="flex items-center gap-2 text-lg">
+              <History className="h-5 w-5 text-teal-600" />
+              新功能分析历史
+            </SheetTitle>
+            <SheetDescription className="text-left">
+              历史记录保存在当前浏览器中，点击任一记录可恢复当时的 AI 建议修改文档、diff 和建议新增文档。
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="flex h-[calc(100vh-120px)] flex-col overflow-hidden">
+            <div className="flex items-center justify-between border-b border-stone-100 px-6 py-3 text-sm text-stone-500">
+              <span>共 {analysisHistory.length} 条历史分析</span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={clearAnalysisHistory}
+                disabled={analysisHistory.length === 0}
+              >
+                清空历史
+              </Button>
+            </div>
+
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="space-y-3 px-6 py-5">
+                {analysisHistory.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-stone-200 bg-stone-50 p-8 text-center">
+                    <History className="mx-auto mb-3 h-8 w-8 text-stone-300" />
+                    <p className="text-sm font-medium text-stone-500">暂无历史记录</p>
+                    <p className="mt-1 text-xs text-stone-400">完成一次新功能分析后，系统会自动保存结果。</p>
+                  </div>
+                ) : (
+                  analysisHistory.map((record) => (
+                    <button
+                      key={record.id}
+                      type="button"
+                      onClick={() => restoreAnalysisHistory(record)}
+                      className="w-full rounded-xl border border-stone-200 bg-white p-4 text-left shadow-sm transition-colors hover:border-teal-200 hover:bg-teal-50/40"
+                    >
+                      <div className="mb-2 flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <h3 className="line-clamp-2 text-sm font-semibold text-stone-900">
+                            {getHistoryTitle(record)}
+                          </h3>
+                          <p className="mt-1 text-xs text-stone-400">
+                            {formatDateTime(record.createdAt)} · {record.model === "deepseek-v4-pro" ? "DeepSeek V4 Pro" : "DeepSeek V4 Flash"}
+                          </p>
+                        </div>
+                        <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-stone-300" />
+                      </div>
+
+                      <div className="flex flex-wrap gap-2 text-xs">
+                        <span className="rounded-full bg-teal-50 px-2 py-1 text-teal-700">
+                          修改文档 {record.affectedDocs.length} 篇
+                        </span>
+                        <span className="rounded-full bg-stone-100 px-2 py-1 text-stone-600">
+                          新增建议 {record.suggestedNewDocs.length} 篇
+                        </span>
+                        {record.imageNames.length > 0 && (
+                          <span className="rounded-full bg-blue-50 px-2 py-1 text-blue-700">
+                            截图 {record.imageNames.length} 张
+                          </span>
+                        )}
+                        {record.retrievalStats && (
+                          <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-700">
+                            预检索 {record.retrievalStats.candidateDocuments}/{record.retrievalStats.totalDocuments} 篇
+                          </span>
+                        )}
+                      </div>
+
+                      {record.affectedDocs.length > 0 && (
+                        <p className="mt-3 line-clamp-2 text-xs text-stone-500">
+                          {record.affectedDocs.map((doc) => doc.docName).join("、")}
+                        </p>
+                      )}
+                    </button>
+                  ))
+                )}
+              </div>
+            </ScrollArea>
+          </div>
         </SheetContent>
       </Sheet>
 

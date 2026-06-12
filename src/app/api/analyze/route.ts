@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { streamDeepSeekChatCompletion, type DeepSeekModel } from "@/lib/deepseek-client";
+import { streamDeepSeekChatCompletion, type ChatMessage, type DeepSeekModel } from "@/lib/deepseek-client";
 import { helpDocuments, type HelpDocument } from "@/lib/documents";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 
@@ -12,6 +12,13 @@ interface AnalyzeRequestBody {
   feature?: unknown;
   documents?: unknown;
   model?: unknown;
+    images?: unknown;
+  }
+
+  interface AnalyzeImagePayload {
+    name?: unknown;
+    type?: unknown;
+    dataUrl?: unknown;
 }
 
 interface DocumentPayload {
@@ -183,6 +190,25 @@ function normalizeDeepSeekModel(model: unknown): DeepSeekModel {
   return model === "deepseek-v4-pro" ? "deepseek-v4-pro" : "deepseek-v4-flash";
 }
 
+function normalizeAnalyzeImages(images: unknown) {
+  if (!Array.isArray(images)) return [];
+
+  return images
+    .map((image): { name: string; type: string; dataUrl: string } | null => {
+      if (!image || typeof image !== "object") return null;
+      const payload = image as AnalyzeImagePayload;
+      if (typeof payload.dataUrl !== "string" || !payload.dataUrl.startsWith("data:image/")) return null;
+
+      return {
+        name: typeof payload.name === "string" && payload.name.trim() ? payload.name.trim() : "功能截图",
+        type: typeof payload.type === "string" && payload.type.trim() ? payload.type.trim() : "image/*",
+        dataUrl: payload.dataUrl,
+      };
+    })
+    .filter((image): image is { name: string; type: string; dataUrl: string } => Boolean(image))
+    .slice(0, 8);
+}
+
 const ENGLISH_STOP_WORDS = new Set([
   "the",
   "and",
@@ -234,11 +260,13 @@ async function loadSupabaseDocuments(): Promise<HelpDocument[]> {
 }
 
 export async function POST(request: NextRequest) {
-  const { feature, documents, model } = (await request.json()) as AnalyzeRequestBody;
+  const { feature, documents, model, images } = (await request.json()) as AnalyzeRequestBody;
   const selectedModel = normalizeDeepSeekModel(model);
+  const featureText = typeof feature === "string" ? feature.trim() : "";
+  const analyzeImages = normalizeAnalyzeImages(images);
 
-  if (!feature || typeof feature !== "string" || feature.trim().length === 0) {
-    return new Response(JSON.stringify({ error: "请输入新功能描述" }), {
+  if (!featureText && analyzeImages.length === 0) {
+    return new Response(JSON.stringify({ error: "请输入新功能描述或上传功能截图" }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
@@ -267,7 +295,7 @@ export async function POST(request: NextRequest) {
         : helpDocuments;
   const zhDocuments = allDocuments.filter((doc) => getDocumentLanguage(doc) === "zh");
   const searchableDocuments = zhDocuments.length > 0 ? zhDocuments : allDocuments;
-  const retrievalResult = selectCandidateDocuments(searchableDocuments, feature.trim());
+  const retrievalResult = selectCandidateDocuments(searchableDocuments, featureText || analyzeImages.map((image) => image.name).join(" "));
   const searchableCandidateDocuments = retrievalResult.candidateDocuments;
 
   const documentById = new Map(allDocuments.map((doc) => [doc.id, doc]));
@@ -381,7 +409,12 @@ export async function POST(request: NextRequest) {
   4. 新增文档必须包含 title、category、language、reason、content。
   5. content 必须是完整可发布的帮助中心文档。
   6. content 必须参考现有帮助中心文档的标题层级、结构、语气和写作风格。
-  7. content 如涉及界面操作，必须使用图片占位符，不要使用真实图片 URL。`;
+  7. content 如涉及界面操作，必须使用图片占位符，不要使用真实图片 URL。
+
+  图片理解规则：
+    1. 如果用户上传了功能截图，请结合图片中的界面文字、按钮、字段和流程，提炼该板块的功能描述、配置步骤、注意事项。
+    2. 当文本描述与截图信息互补时，以用户文本为目标，以截图补充入口、字段名和操作顺序。
+    3. 无法从截图确认的信息不要编造，可用较保守的表述。`;
 
   const userPrompt = `以下是从当前帮助中心 ${allDocuments.length} 篇文档中预检索出的 ${searchableCandidateDocuments.length} 篇中文候选文档：
 
@@ -397,13 +430,26 @@ export async function POST(request: NextRequest) {
 
   现在有一个新功能需要上线，功能描述如下：
 
-  ${feature}
+  ${featureText || "用户未输入文字描述，请根据上传截图理解功能设置内容并撰写功能描述与操作步骤。"}
+
+  上传的功能截图：${analyzeImages.length > 0 ? analyzeImages.map((image, index) => `${index + 1}. ${image.name}（${image.type}）`).join("；") : "无"}
 
   请只基于上述中文候选文档判断需要修改或新增的中文帮助中心文档；如果相关中文文档存在关联英文文档，请同步给出英文文档修改内容。请按指定 JSON 格式返回可渲染的文档修改建议。`;
 
-  const messages = [
-    { role: "system" as const, content: systemPrompt },
-    { role: "user" as const, content: userPrompt },
+  const userContent: ChatMessage["content"] =
+    analyzeImages.length > 0
+      ? [
+          { type: "text", text: userPrompt },
+          ...analyzeImages.map((image) => ({
+            type: "image_url" as const,
+            image_url: { url: image.dataUrl },
+          })),
+        ]
+      : userPrompt;
+
+  const messages: ChatMessage[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userContent },
   ];
 
   const encoder = new TextEncoder();

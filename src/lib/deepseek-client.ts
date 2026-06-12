@@ -1,9 +1,21 @@
 type ChatRole = "system" | "user" | "assistant";
 export type DeepSeekModel = "deepseek-v4-flash" | "deepseek-v4-pro";
 
+export interface ChatImageContent {
+  type: "image_url";
+  image_url: {
+    url: string;
+  };
+}
+
+export interface ChatTextContent {
+  type: "text";
+  text: string;
+}
+
 export interface ChatMessage {
   role: ChatRole;
-  content: string;
+  content: string | Array<ChatTextContent | ChatImageContent>;
 }
 
 interface DeepSeekStreamOptions {
