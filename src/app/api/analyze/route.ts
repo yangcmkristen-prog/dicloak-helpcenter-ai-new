@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { streamDeepSeekChatCompletion, type ChatMessage, type DeepSeekModel } from "@/lib/deepseek-client";
+import { describeImagesWithVisionModel } from "@/lib/vision-client";
 import { helpDocuments, type HelpDocument } from "@/lib/documents";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 
@@ -12,7 +13,7 @@ interface AnalyzeRequestBody {
   feature?: unknown;
   documents?: unknown;
   model?: unknown;
-    images?: unknown;
+  images?: unknown;
   }
 
   interface AnalyzeImagePayload {
@@ -295,7 +296,23 @@ export async function POST(request: NextRequest) {
         : helpDocuments;
   const zhDocuments = allDocuments.filter((doc) => getDocumentLanguage(doc) === "zh");
   const searchableDocuments = zhDocuments.length > 0 ? zhDocuments : allDocuments;
-  const retrievalResult = selectCandidateDocuments(searchableDocuments, featureText || analyzeImages.map((image) => image.name).join(" "));
+  let imageDescriptions = "";
+  if (analyzeImages.length > 0) {
+    try {
+      imageDescriptions = await describeImagesWithVisionModel(analyzeImages);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "图片识别失败";
+      return new Response(JSON.stringify({ error: errorMessage }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+
+  const retrievalQuery = [featureText, imageDescriptions, analyzeImages.map((image) => image.name).join(" ")]
+    .filter(Boolean)
+    .join(" ");
+  const retrievalResult = selectCandidateDocuments(searchableDocuments, retrievalQuery);
   const searchableCandidateDocuments = retrievalResult.candidateDocuments;
 
   const documentById = new Map(allDocuments.map((doc) => [doc.id, doc]));
@@ -434,22 +451,14 @@ export async function POST(request: NextRequest) {
 
   上传的功能截图：${analyzeImages.length > 0 ? analyzeImages.map((image, index) => `${index + 1}. ${image.name}（${image.type}）`).join("；") : "无"}
 
-  请只基于上述中文候选文档判断需要修改或新增的中文帮助中心文档；如果相关中文文档存在关联英文文档，请同步给出英文文档修改内容。请按指定 JSON 格式返回可渲染的文档修改建议。`;
+  视觉模型识别出的截图内容：
+  ${imageDescriptions || "无"}
 
-  const userContent: ChatMessage["content"] =
-    analyzeImages.length > 0
-      ? [
-          { type: "text", text: userPrompt },
-          ...analyzeImages.map((image) => ({
-            type: "image_url" as const,
-            image_url: { url: image.dataUrl },
-          })),
-        ]
-      : userPrompt;
+  请只基于上述中文候选文档和截图识别内容判断需要修改或新增的中文帮助中心文档；如果相关中文文档存在关联英文文档，请同步给出英文文档修改内容。请按指定 JSON 格式返回可渲染的文档修改建议。`;
 
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt },
-    { role: "user", content: userContent },
+    { role: "user", content: userPrompt },
   ];
 
   const encoder = new TextEncoder();
