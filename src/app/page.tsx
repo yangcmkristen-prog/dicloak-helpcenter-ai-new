@@ -70,6 +70,7 @@ interface DocDetail {
   htmlContent?: string;
   language?: "zh" | "en" | "unknown";
   linkedDocId?: string;
+  linkedDocIds?: string[];
 }
 
 interface RetrievalStats {
@@ -218,10 +219,41 @@ async function parseJsonResponse<T>(response: Response, fallbackMessage: string)
   }
 }
 
+function getLinkedDocIdsFromValue(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+  }
+
+  if (typeof value !== "string" || value.trim().length === 0) return [];
+
+  const trimmedValue = value.trim();
+  if (trimmedValue.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmedValue) as unknown;
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string" && id.trim().length > 0) : [];
+    } catch {
+      return [trimmedValue];
+    }
+  }
+
+  return [trimmedValue];
+}
+
+function getDocLinkedIds(doc: Pick<DocDetail, "linkedDocId" | "linkedDocIds">) {
+  return Array.from(new Set([...(doc.linkedDocIds ?? []), ...(doc.linkedDocId ? [doc.linkedDocId] : [])]));
+}
+
+function setDocLinkedIds(doc: DocDetail, linkedDocIds: string[]) {
+  const uniqueLinkedDocIds = Array.from(new Set(linkedDocIds.filter((id) => id !== doc.id)));
+  return { ...doc, linkedDocIds: uniqueLinkedDocIds, linkedDocId: uniqueLinkedDocIds[0] };
+}
+
+function haveSameLinkedDocIds(firstDoc: DocDetail, secondDoc: DocDetail) {
+  return getDocLinkedIds(firstDoc).join("|") === getDocLinkedIds(secondDoc).join("|");
+}
+
 function removeLinkedDocId(doc: DocDetail): DocDetail {
-  const nextDoc = { ...doc };
-  delete nextDoc.linkedDocId;
-  return nextDoc;
+  return setDocLinkedIds(doc, []);
 }
 
 function getStringField(value: unknown) {
@@ -260,7 +292,8 @@ function normalizeHelpDocument(rawDoc: unknown): DocDetail | null {
     sourceUrl: getStringField(doc.sourceUrl) ?? getStringField(doc.source_url),
     htmlContent,
     language: language === "zh" || language === "en" || language === "unknown" ? language : "unknown",
-    linkedDocId: getStringField(doc.linkedDocId) ?? getStringField(doc.linked_doc_id),
+    linkedDocIds: getLinkedDocIdsFromValue(doc.linkedDocIds ?? doc.linked_doc_ids ?? doc.linkedDocId ?? doc.linked_doc_id),
+    linkedDocId: getLinkedDocIdsFromValue(doc.linkedDocIds ?? doc.linked_doc_ids ?? doc.linkedDocId ?? doc.linked_doc_id)[0],
   };
 }
 
@@ -274,6 +307,66 @@ function normalizeHelpDocuments(rawDocs: unknown): DocDetail[] {
 
 function hasReadableContent(doc: DocDetail) {
   return doc.content.trim().length > 0 || Boolean(doc.htmlContent?.trim());
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function markdownToRichHtml(markdown: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const htmlLines: string[] = [];
+
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine) {
+      htmlLines.push("<p><br></p>");
+      continue;
+    }
+
+    const headingMatch = /^(#{1,4})\s+(.+)$/.exec(trimmedLine);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      htmlLines.push(`<h${level}>${escapeHtml(headingMatch[2])}</h${level}>`);
+      continue;
+    }
+
+    const unorderedListMatch = /^[-*]\s+(.+)$/.exec(trimmedLine);
+    if (unorderedListMatch) {
+      htmlLines.push(`<ul><li>${escapeHtml(unorderedListMatch[1])}</li></ul>`);
+      continue;
+    }
+
+    const orderedListMatch = /^(\d+)\.\s+(.+)$/.exec(trimmedLine);
+    if (orderedListMatch) {
+      htmlLines.push(`<ol start="${orderedListMatch[1]}"><li>${escapeHtml(orderedListMatch[2])}</li></ol>`);
+      continue;
+    }
+
+    htmlLines.push(`<p>${escapeHtml(trimmedLine)}</p>`);
+  }
+
+  return htmlLines.join("\n");
+}
+
+async function copyMarkdownAsRichText(markdown: string) {
+  const html = markdownToRichHtml(markdown);
+
+  if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        "text/html": new Blob([html], { type: "text/html" }),
+        "text/plain": new Blob([markdown], { type: "text/plain" }),
+      }),
+    ]);
+    return;
+  }
+
+  await navigator.clipboard.writeText(markdown);
 }
 
 function renderInlineFormatting(text: string) {
@@ -497,6 +590,15 @@ export default function HomePage() {
     }
   }, []);
 
+  const handleCopyRichMarkdown = useCallback(async (markdown: string) => {
+    try {
+      await copyMarkdownAsRichText(markdown);
+      setUploadMessage("已复制富文本，可直接粘贴到文档编辑器");
+    } catch {
+      setError("复制失败，请手动选择文档内容复制");
+    }
+  }, []);
+
   const persistAnalysisHistory = useCallback((history: AnalysisHistoryRecord[]) => {
     setAnalysisHistory(history);
     try {
@@ -541,7 +643,7 @@ export default function HomePage() {
         source_url: doc.sourceUrl || null,
         html_content: doc.htmlContent || null,
         language: doc.language || "unknown",
-        linked_doc_id: doc.linkedDocId || null,
+        linked_doc_id: getDocLinkedIds(doc).length > 0 ? JSON.stringify(getDocLinkedIds(doc)) : null,
       }));
 
       const response = await fetch("/api/docs", {
@@ -568,7 +670,7 @@ export default function HomePage() {
         body: JSON.stringify({
           links: docs.map((doc) => ({
             id: doc.id,
-            linked_doc_id: doc.linkedDocId || null,
+            linked_doc_id: getDocLinkedIds(doc).length > 0 ? JSON.stringify(getDocLinkedIds(doc)) : null,
           })),
         }),
       });
@@ -599,7 +701,8 @@ export default function HomePage() {
             ...incomingDoc,
             content: incomingHasContent ? incomingDoc.content : existingDoc.content,
             htmlContent: incomingDoc.htmlContent ?? existingDoc.htmlContent,
-            linkedDocId: incomingDoc.linkedDocId ?? existingDoc.linkedDocId,
+            linkedDocIds: getDocLinkedIds(incomingDoc).length > 0 ? getDocLinkedIds(incomingDoc) : getDocLinkedIds(existingDoc),
+            linkedDocId: (getDocLinkedIds(incomingDoc).length > 0 ? getDocLinkedIds(incomingDoc) : getDocLinkedIds(existingDoc))[0],
           };
         } else {
           nextDocs.push(incomingDoc);
@@ -768,7 +871,7 @@ export default function HomePage() {
   const handleOpenLinkDrawer = useCallback((doc: DocDetail) => {
     setLinkingDoc(doc);
     setLinkDocSearch("");
-    setLinkPreviewDocId(doc.linkedDocId ?? null);
+    setLinkPreviewDocId(getDocLinkedIds(doc)[0] ?? null);
     setLinkDrawerOpen(true);
   }, []);
 
@@ -780,23 +883,15 @@ export default function HomePage() {
     setHelpDocs((currentDocs) => {
       const nextDocs = currentDocs.map((doc) => {
         if (doc.id === linkingDoc.id) {
-          return { ...doc, linkedDocId: targetDoc.id };
+          return setDocLinkedIds(doc, [...getDocLinkedIds(doc), targetDoc.id]);
         }
         if (doc.id === targetDoc.id) {
-          return { ...doc, linkedDocId: linkingDoc.id };
-        }
-        if (doc.linkedDocId === linkingDoc.id || doc.linkedDocId === targetDoc.id) {
-          return removeLinkedDocId(doc);
+          return setDocLinkedIds(doc, [...getDocLinkedIds(doc), linkingDoc.id]);
         }
         return doc;
       });
 
-      docsToSync = nextDocs.filter(
-        (doc) =>
-          doc.id === linkingDoc.id ||
-          doc.id === targetDoc.id ||
-          currentDocs.some((currentDoc) => currentDoc.id === doc.id && currentDoc.linkedDocId !== doc.linkedDocId)
-      );
+      docsToSync = nextDocs.filter((doc) => currentDocs.some((currentDoc) => currentDoc.id === doc.id && !haveSameLinkedDocIds(currentDoc, doc)));
 
       return nextDocs;
     });
@@ -813,16 +908,19 @@ export default function HomePage() {
 
     setHelpDocs((currentDocs) => {
       const currentDoc = currentDocs.find((doc) => doc.id === docId);
-      const linkedDocId = currentDoc?.linkedDocId;
+      const linkedDocIds = currentDoc ? getDocLinkedIds(currentDoc) : [];
 
       const nextDocs = currentDocs.map((doc) => {
-        if (doc.id === docId || (linkedDocId && doc.id === linkedDocId)) {
+        if (doc.id === docId) {
           return removeLinkedDocId(doc);
+        }
+        if (linkedDocIds.includes(doc.id)) {
+          return setDocLinkedIds(doc, getDocLinkedIds(doc).filter((linkedId) => linkedId !== docId));
         }
         return doc;
       });
 
-      docsToSync = nextDocs.filter((doc) => currentDocs.some((currentDoc) => currentDoc.id === doc.id && currentDoc.linkedDocId !== doc.linkedDocId));
+      docsToSync = nextDocs.filter((doc) => currentDocs.some((currentDoc) => currentDoc.id === doc.id && !haveSameLinkedDocIds(currentDoc, doc)));
 
       return nextDocs;
     });
@@ -856,14 +954,14 @@ export default function HomePage() {
       const nextDocs = currentDocs
         .filter((doc) => doc.id !== docId)
         .map((doc) => {
-          if (doc.linkedDocId === docId) {
-            return removeLinkedDocId(doc);
+          if (getDocLinkedIds(doc).includes(docId)) {
+            return setDocLinkedIds(doc, getDocLinkedIds(doc).filter((linkedId) => linkedId !== docId));
           }
           return doc;
         });
 
       docsToSync = nextDocs.filter((doc) =>
-        currentDocs.some((currentDoc) => currentDoc.id === doc.id && currentDoc.linkedDocId !== doc.linkedDocId)
+        currentDocs.some((currentDoc) => currentDoc.id === doc.id && !haveSameLinkedDocIds(currentDoc, doc))
       );
 
       return nextDocs;
@@ -1376,7 +1474,7 @@ export default function HomePage() {
               ) : (
                 <div className="grid gap-3">
                   {paginatedHelpDocs.map((doc) => {
-                    const linkedDoc = doc.linkedDocId ? helpDocs.find((helpDoc) => helpDoc.id === doc.linkedDocId) : null;
+                    const linkedDocs = getDocLinkedIds(doc).map((linkedId) => helpDocs.find((helpDoc) => helpDoc.id === linkedId)).filter((linkedDoc): linkedDoc is DocDetail => Boolean(linkedDoc));
 
                     return (
                       <div
@@ -1415,23 +1513,28 @@ export default function HomePage() {
                           <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md bg-stone-50 px-2 py-1.5 text-xs text-stone-500">
                             <LinkIcon className="h-3.5 w-3.5 shrink-0 text-teal-600" />
                             <span className="shrink-0">关联文档：</span>
-                            {linkedDoc ? (
-                              <button
-                                type="button"
-                                onClick={() => handlePreviewDoc(linkedDoc)}
-                                className="min-w-0 flex-1 truncate text-left font-medium text-teal-700 hover:underline"
-                                title={linkedDoc.title}
-                              >
-                                {linkedDoc.title}
-                              </button>
+                            {linkedDocs.length > 0 ? (
+                              <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+                                {linkedDocs.map((linkedDoc) => (
+                                  <button
+                                    key={linkedDoc.id}
+                                    type="button"
+                                    onClick={() => handlePreviewDoc(linkedDoc)}
+                                    className="max-w-full truncate rounded bg-white px-1.5 py-0.5 font-medium text-teal-700 hover:underline"
+                                    title={linkedDoc.title}
+                                  >
+                                    {linkedDoc.title}
+                                  </button>
+                                ))}
+                              </div>
                             ) : (
                               <span className="min-w-0 flex-1 truncate text-stone-400">
                                 未关联，可点击右侧「关联」选择对应语言文档
                               </span>
                             )}
-                            {linkedDoc?.language && linkedDoc.language !== "unknown" && (
+                            {linkedDocs.length > 0 && (
                               <Badge variant="secondary" className="shrink-0 text-[10px]">
-                                {linkedDoc.language === "zh" ? "中文" : "English"}
+                                {linkedDocs.length} 个关联
                               </Badge>
                             )}
                           </div>
@@ -1444,7 +1547,7 @@ export default function HomePage() {
                             className="shrink-0 text-teal-700 hover:bg-teal-50"
                             onClick={() => handleOpenLinkDrawer(doc)}
                           >
-                            {linkedDoc ? "更换关联" : "关联"}
+                            {linkedDocs.length > 0 ? "管理关联" : "关联"}
                           </Button>
                           <Button
                             variant="ghost"
@@ -1854,6 +1957,15 @@ export default function HomePage() {
                             {doc.language === "zh" ? "中文" : doc.language === "en" ? "English" : "未知语言"}
                           </Badge>
                         )}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={() => void handleCopyRichMarkdown(doc.content)}
+                        >
+                          复制富文本
+                        </Button>
                       </div>
 
                       <p className="mb-4 text-sm leading-6 text-stone-500">
@@ -1901,7 +2013,7 @@ export default function HomePage() {
                   <span className="min-w-0 truncate">关联文档：{linkingDoc.title}</span>
                 </SheetTitle>
                 <SheetDescription className="text-left">
-                  选择对应的中文或英文文档，系统会自动建立双向关联；不需要关联的文档可以保持未关联。
+                  可选择一个或多个对应的中文/英文文档，系统会自动建立双向关联；同一文档支持关联多个文档。
                 </SheetDescription>
               </SheetHeader>
 
@@ -1913,7 +2025,7 @@ export default function HomePage() {
                     placeholder="搜索要关联的文档名称或链接"
                     className="mb-3 w-full rounded-md border border-stone-200 bg-white px-3 py-2 text-sm outline-none transition-colors focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
                   />
-                  {linkingDoc.linkedDocId && (
+                  {getDocLinkedIds(linkingDoc).length > 0 && (
                     <Button
                       type="button"
                       variant="outline"
@@ -1921,7 +2033,7 @@ export default function HomePage() {
                       className="mb-3 w-full text-stone-600"
                       onClick={() => handleUnlinkDoc(linkingDoc.id)}
                     >
-                      取消当前关联
+                      取消所有关联
                     </Button>
                   )}
                   <ScrollArea className="h-[calc(100vh-235px)] pr-2">

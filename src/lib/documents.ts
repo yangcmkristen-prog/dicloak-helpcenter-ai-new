@@ -9,7 +9,9 @@ export interface HelpDocument {
   sourceUrl?: string;
   htmlContent?: string;
   linkedDocId?: string;
-  linked_doc_id?: string;
+  linkedDocIds?: string[];
+  linked_doc_id?: string | string[];
+  linked_doc_ids?: string[];
 }
 
 export const helpDocuments: HelpDocument[] = [

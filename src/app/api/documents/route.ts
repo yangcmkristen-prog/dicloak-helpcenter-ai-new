@@ -1,6 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 
+function normalizeLinkedDocIds(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+  }
+
+  if (typeof value !== "string" || value.trim().length === 0) return [];
+
+  const trimmedValue = value.trim();
+  if (trimmedValue.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmedValue) as unknown;
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string" && id.trim().length > 0) : [];
+    } catch {
+      return [trimmedValue];
+    }
+  }
+
+  return [trimmedValue];
+}
+
 // GET /api/documents — 获取所有文档摘要列表（兼容旧接口）
 export async function GET() {
   try {
@@ -20,7 +40,8 @@ export async function GET() {
       lastUpdated: doc.last_updated,
       language: doc.language,
       sourceUrl: doc.source_url,
-      linkedDocId: doc.linked_doc_id,
+      linkedDocIds: normalizeLinkedDocIds(doc.linked_doc_id),
+      linkedDocId: normalizeLinkedDocIds(doc.linked_doc_id)[0],
     }));
     return NextResponse.json({ documents: docs });
   } catch (err) {
@@ -59,7 +80,8 @@ export async function POST(request: NextRequest) {
       sourceUrl: data.source_url,
       htmlContent: data.html_content,
       language: data.language,
-      linkedDocId: data.linked_doc_id,
+      linkedDocIds: normalizeLinkedDocIds(data.linked_doc_id),
+      linkedDocId: normalizeLinkedDocIds(data.linked_doc_id)[0],
     };
     return NextResponse.json({ document: doc });
   } catch (err) {

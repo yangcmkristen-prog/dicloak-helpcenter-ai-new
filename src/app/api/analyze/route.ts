@@ -31,13 +31,46 @@ interface DocumentPayload {
   content?: unknown;
   language?: unknown;
   linkedDocId?: unknown;
+  linkedDocIds?: unknown;
   linked_doc_id?: unknown;
+  linked_doc_ids?: unknown;
 }
 
 interface RankedDocument {
   doc: HelpDocument;
   score: number;
   matchedTerms: string[];
+}
+
+function normalizeLinkedDocIds(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+  }
+
+  if (typeof value !== "string" || value.trim().length === 0) return [];
+
+  const trimmedValue = value.trim();
+  if (trimmedValue.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmedValue) as unknown;
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string" && id.trim().length > 0) : [];
+    } catch {
+      return [trimmedValue];
+    }
+  }
+
+  return [trimmedValue];
+}
+
+function getDocumentLinkedIds(doc: HelpDocument) {
+  return Array.from(
+    new Set([
+      ...normalizeLinkedDocIds("linkedDocIds" in doc ? doc.linkedDocIds : undefined),
+      ...normalizeLinkedDocIds("linked_doc_ids" in doc ? doc.linked_doc_ids : undefined),
+      ...normalizeLinkedDocIds("linkedDocId" in doc ? doc.linkedDocId : undefined),
+      ...normalizeLinkedDocIds("linked_doc_id" in doc ? doc.linked_doc_id : undefined),
+    ])
+  );
 }
 
 function normalizeText(text: string) {
@@ -169,18 +202,14 @@ function normalizeDocumentPayload(doc: DocumentPayload): HelpDocument | null {
     typeof doc.content === "string" &&
     doc.content.trim().length > 0
   ) {
-    const linkedDocId =
-      typeof doc.linkedDocId === "string"
-        ? doc.linkedDocId
-        : typeof doc.linked_doc_id === "string"
-          ? doc.linked_doc_id
-          : undefined;
+    const linkedDocIds = normalizeLinkedDocIds(doc.linkedDocIds ?? doc.linked_doc_ids ?? doc.linkedDocId ?? doc.linked_doc_id);
 
     return {
       ...(doc as HelpDocument),
       lastUpdated,
       language: typeof doc.language === "string" ? doc.language : "unknown",
-      linkedDocId,
+      linkedDocId: linkedDocIds[0],
+      linkedDocIds,
     };
   }
 
@@ -255,6 +284,7 @@ async function loadSupabaseDocuments(): Promise<HelpDocument[]> {
         htmlContent: doc.html_content,
         language: doc.language,
         linked_doc_id: doc.linked_doc_id,
+        linked_doc_ids: doc.linked_doc_id,
       } as DocumentPayload)
     )
     .filter((doc): doc is HelpDocument => Boolean(doc));
@@ -317,27 +347,18 @@ export async function POST(request: NextRequest) {
 
   const documentById = new Map(allDocuments.map((doc) => [doc.id, doc]));
 
-  const relatedEnglishDocuments = searchableCandidateDocuments
-    .map((doc) => {
-      const linkedDocId =
-        "linkedDocId" in doc && typeof doc.linkedDocId === "string"
-          ? doc.linkedDocId
-          : "linked_doc_id" in doc && typeof doc.linked_doc_id === "string"
-            ? doc.linked_doc_id
-            : undefined;
-
-      if (!linkedDocId) return null;
-
+  const relatedEnglishDocuments = searchableCandidateDocuments.flatMap((doc) =>
+    getDocumentLinkedIds(doc).flatMap((linkedDocId) => {
       const linkedDoc = documentById.get(linkedDocId);
-      if (!linkedDoc || getDocumentLanguage(linkedDoc) !== "en") return null;
+      if (!linkedDoc || getDocumentLanguage(linkedDoc) !== "en") return [];
 
-      return {
+      return [{
         zhDocId: doc.id,
         zhDocTitle: doc.title,
         enDoc: linkedDoc,
-      };
+      }];
     })
-    .filter((item): item is { zhDocId: string; zhDocTitle: string; enDoc: HelpDocument } => Boolean(item));
+  );
 
   // 第一阶段先做轻量关键词召回，只把最相关候选文档交给 LLM，降低 300+ 文档场景下的 token 消耗。
   const docSummaries = retrievalResult.rankedDocuments
@@ -351,9 +372,7 @@ export async function POST(request: NextRequest) {
   const linkedEnglishDocSummaries = relatedEnglishDocuments
     .map((item) => {
       const doc = item.enDoc;
-      return `
-  内容:
-  ${doc.content}`;
+      return `【关联中文文档ID: ${item.zhDocId}】【关联中文标题: ${item.zhDocTitle}】\n【英文文档ID: ${doc.id}】【标题: ${doc.title}】【分类: ${doc.category}】【更新时间: ${doc.lastUpdated}】\n内容:\n${doc.content}`;
     })
     .join("\n\n---\n\n");
 
@@ -364,12 +383,13 @@ export async function POST(request: NextRequest) {
   重要规则：
   1. 用户会用中文描述新功能。
   2. 优先分析中文候选文档。
-  3. 如果新功能与现有中文文档主题强相关，则修改现有文档，放入 affectedDocs。
-  4. 如果新功能属于独立功能模块、单独入口或内容较多，不适合插入现有文档，则建议新建文档，放入 newDocs。
-  5. 不允许为了复用文档而强行添加到不相关文档中。
-  6. 如果中文文档存在关联英文文档，并且该中文文档需要修改，则同步输出英文关联文档的修改建议。
+  3. 如果新功能与现有中文文档主题强相关，则修改现有中文文档，放入 affectedDocs。
+  4. 每次必须同时输出中文和英文两个版本：中文候选文档需要修改时，必须同时把该中文文档关联的所有英文文档也放入 affectedDocs，并分别输出中英两个文档的 diff。
+  5. 如果新功能属于独立功能模块、单独入口或内容较多，不适合插入现有文档，则建议新建文档，放入 newDocs。
+  6. 不允许为了复用文档而强行添加到不相关文档中。
   7. 不要引用候选文档和关联英文文档之外的任何文档。
   8. 不要编造不存在的功能、入口、步骤或限制。
+  9. 中英两个版本的功能术语、入口、按钮、字段、截图占位符必须语义一致，如果有中英两个版本的截图信息，则按照对应语言版本的术语输出。
 
   你必须严格返回 JSON，不要返回 Markdown，不要返回解释文字。
 
@@ -403,8 +423,9 @@ export async function POST(request: NextRequest) {
   1. affectedDocs 只放需要修改的现有文档。
   2. docId 和 docName 必须来自候选文档或关联英文文档，不要编造。
   3. 中文文档需要修改时，language 写 zh。
-  4. 英文关联文档需要同步修改时，language 写 en，并填写 linkedFromDocId。
-  5. 如果没有需要修改的现有文档，affectedDocs 返回 []。
+  4. 英文关联文档必须同步修改，language 写 en，并填写 linkedFromDocId。
+  5. 如果一个中文文档关联多个英文文档，需要为每个英文关联文档各输出一条 affectedDocs。
+  6. 如果没有需要修改的现有文档，affectedDocs 返回 []。
 
   diff 规则：
   1. unifiedDiff 必须使用统一 diff 风格。
@@ -422,11 +443,13 @@ export async function POST(request: NextRequest) {
   newDocs 规则：
   1. newDocs 只放建议新增的独立文档。
   2. 只有当新功能不适合放进现有候选文档时，才建议新增文档。
-  3. 如果没有建议新增文档，newDocs 返回 []。
-  4. 新增文档必须包含 title、category、language、reason、content。
-  5. content 必须是完整可发布的帮助中心文档。
-  6. content 必须参考现有帮助中心文档的标题层级、结构、语气和写作风格。
-  7. content 如涉及界面操作，必须使用图片占位符，不要使用真实图片 URL。
+  3. 如果建议新增文档，必须同时输出 language=zh 和 language=en 两篇 newDocs。
+  4. 如果没有建议新增文档，newDocs 返回 []。
+  5. 新增文档必须包含 title、category、language、reason、content。
+  6. content 必须是完整可发布的帮助中心文档。
+  7. content 必须参考现有帮助中心文档的标题层级、结构、语气和写作风格。
+  8. content 必须使用标准 Markdown 标题和正文，不要包裹在代码块里，便于前端复制为富文本。
+  9. content 如涉及界面操作，必须使用图片占位符，不要使用真实图片 URL。
 
   图片理解规则：
     1. 如果用户上传了功能截图，请结合图片中的界面文字、按钮、字段和流程，提炼该板块的功能描述、配置步骤、注意事项。

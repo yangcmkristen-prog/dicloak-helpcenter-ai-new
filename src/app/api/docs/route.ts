@@ -1,6 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 
+function normalizeLinkedDocIds(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+  }
+
+  if (typeof value !== "string" || value.trim().length === 0) return [];
+
+  const trimmedValue = value.trim();
+  if (trimmedValue.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmedValue) as unknown;
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string" && id.trim().length > 0) : [];
+    } catch {
+      return [trimmedValue];
+    }
+  }
+
+  return [trimmedValue];
+}
+
+function serializeLinkedDocIds(value: unknown) {
+  const ids = Array.from(new Set(normalizeLinkedDocIds(value)));
+  return ids.length > 0 ? JSON.stringify(ids) : null;
+}
+
 // GET /api/docs — 获取所有文档摘要列表
 export async function GET() {
   try {
@@ -36,7 +61,7 @@ export async function POST(request: NextRequest) {
         source_url: (doc.source_url as string) || null,
         html_content: (doc.html_content as string) || null,
         language: (doc.language as string) || "unknown",
-        linked_doc_id: (doc.linked_doc_id as string) || null,
+        linked_doc_id: serializeLinkedDocIds(doc.linked_doc_ids ?? doc.linkedDocIds ?? doc.linked_doc_id ?? doc.linkedDocId),
       }));
 
       const { data, error } = await client
@@ -49,7 +74,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 单条创建
-    const { id, title, category, last_updated, content, source_url, html_content, language, linked_doc_id } = body as {
+    const { id, title, category, last_updated, content, source_url, html_content, language, linked_doc_id, linked_doc_ids } = body as {
       id: string;
       title: string;
       category?: string;
@@ -58,7 +83,8 @@ export async function POST(request: NextRequest) {
       source_url?: string;
       html_content?: string;
       language?: string;
-      linked_doc_id?: string | null;
+      linked_doc_id?: string | string[] | null;
+      linked_doc_ids?: string[] | null;
     };
 
     if (!id || !title || !content) {
@@ -77,11 +103,11 @@ export async function POST(request: NextRequest) {
           source_url: source_url || null,
           html_content: html_content || null,
           language: language || "unknown",
-          linked_doc_id: linked_doc_id || null,
+          linked_doc_id: serializeLinkedDocIds(linked_doc_ids ?? linked_doc_id),
         },
         { onConflict: "id" }
       )
-      .select("id, title, category, last_updated, content, html_content, language, source_url");
+      .select("id, title, category, last_updated, content, html_content, language, source_url, linked_doc_id");
 
     if (error) throw new Error(`创建文档失败: ${error.message}`);
     return NextResponse.json({ document: data[0] });
@@ -96,7 +122,7 @@ export async function PATCH(request: NextRequest) {
   try {
     const client = getSupabaseClient();
     const body = await request.json();
-    const { links } = body as { links?: { id?: string; linked_doc_id?: string | null }[] };
+    const { links } = body as { links?: { id?: string; linked_doc_id?: string | string[] | null; linked_doc_ids?: string[] | null }[] };
 
     if (!Array.isArray(links) || links.length === 0) {
       return NextResponse.json({ error: "缺少 links 参数" }, { status: 400 });
@@ -106,7 +132,7 @@ export async function PATCH(request: NextRequest) {
       .filter((link) => typeof link.id === "string" && link.id.trim().length > 0)
       .map((link) => ({
         id: link.id as string,
-        linked_doc_id: typeof link.linked_doc_id === "string" && link.linked_doc_id.trim().length > 0 ? link.linked_doc_id : null,
+        linked_doc_id: serializeLinkedDocIds(link.linked_doc_ids ?? link.linked_doc_id),
       }));
 
     if (normalizedLinks.length === 0) {
