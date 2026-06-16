@@ -685,6 +685,8 @@ export default function HomePage() {
 
   const mergeHelpDocs = useCallback((incomingDocs: DocDetail[]) => {
     const normalizedIncomingDocs = normalizeHelpDocuments(incomingDocs).filter(hasReadableContent);
+    const incomingDocIds = new Set(normalizedIncomingDocs.map((doc) => doc.id));
+    let docsToSync: DocDetail[] = normalizedIncomingDocs;
 
     setHelpDocs((currentDocs) => {
       const nextDocs = [...currentDocs];
@@ -695,24 +697,26 @@ export default function HomePage() {
         if (existingIndex >= 0) {
           const existingDoc = nextDocs[existingIndex];
           const incomingHasContent = hasReadableContent(incomingDoc);
+          const preservedLinkedDocIds = getDocLinkedIds(incomingDoc).length > 0 ? getDocLinkedIds(incomingDoc) : getDocLinkedIds(existingDoc);
 
           nextDocs[existingIndex] = {
             ...existingDoc,
             ...incomingDoc,
             content: incomingHasContent ? incomingDoc.content : existingDoc.content,
             htmlContent: incomingDoc.htmlContent ?? existingDoc.htmlContent,
-            linkedDocIds: getDocLinkedIds(incomingDoc).length > 0 ? getDocLinkedIds(incomingDoc) : getDocLinkedIds(existingDoc),
-            linkedDocId: (getDocLinkedIds(incomingDoc).length > 0 ? getDocLinkedIds(incomingDoc) : getDocLinkedIds(existingDoc))[0],
+            linkedDocIds: preservedLinkedDocIds,
+            linkedDocId: preservedLinkedDocIds[0],
           };
         } else {
           nextDocs.push(incomingDoc);
         }
       }
 
+      docsToSync = nextDocs.filter((doc) => incomingDocIds.has(doc.id));
       return nextDocs;
     });
 
-    syncDocsToSupabase(normalizedIncomingDocs);
+    syncDocsToSupabase(docsToSync);
   }, [syncDocsToSupabase]);
 
   const handleFileUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {

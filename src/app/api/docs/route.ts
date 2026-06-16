@@ -26,6 +26,29 @@ function serializeLinkedDocIds(value: unknown) {
   return ids.length > 0 ? JSON.stringify(ids) : null;
 }
 
+function hasLinkedDocPayload(doc: Record<string, unknown>) {
+  return "linked_doc_ids" in doc || "linkedDocIds" in doc || "linked_doc_id" in doc || "linkedDocId" in doc;
+}
+
+function buildHelpDocumentRow(doc: Record<string, unknown>, fallbackLinkedDocId?: unknown) {
+  const row: Record<string, unknown> = {
+    id: doc.id as string,
+    title: doc.title as string,
+    category: (doc.category as string) || "未分类",
+    last_updated: (doc.last_updated as string) || new Date().toISOString().split("T")[0],
+    content: doc.content as string,
+    source_url: (doc.source_url as string) || null,
+    html_content: (doc.html_content as string) || null,
+    language: (doc.language as string) || "unknown",
+  };
+
+  row.linked_doc_id = hasLinkedDocPayload(doc)
+    ? serializeLinkedDocIds(doc.linked_doc_ids ?? doc.linkedDocIds ?? doc.linked_doc_id ?? doc.linkedDocId)
+    : fallbackLinkedDocId ?? null;
+
+  return row;
+}
+
 // GET /api/docs — 获取所有文档摘要列表
 export async function GET() {
   try {
@@ -52,17 +75,25 @@ export async function POST(request: NextRequest) {
 
     // 批量创建
     if (Array.isArray(body)) {
-      const rows = body.map((doc: Record<string, unknown>) => ({
-        id: doc.id as string,
-        title: doc.title as string,
-        category: (doc.category as string) || "未分类",
-        last_updated: (doc.last_updated as string) || new Date().toISOString().split("T")[0],
-        content: doc.content as string,
-        source_url: (doc.source_url as string) || null,
-        html_content: (doc.html_content as string) || null,
-        language: (doc.language as string) || "unknown",
-        linked_doc_id: serializeLinkedDocIds(doc.linked_doc_ids ?? doc.linkedDocIds ?? doc.linked_doc_id ?? doc.linkedDocId),
-      }));
+      const docs = body as Record<string, unknown>[];
+      const idsNeedingLinkFallback = docs
+        .filter((doc) => typeof doc.id === "string" && !hasLinkedDocPayload(doc))
+        .map((doc) => doc.id as string);
+      const existingLinkById = new Map<string, unknown>();
+
+      if (idsNeedingLinkFallback.length > 0) {
+        const { data: existingDocs, error: existingError } = await client
+          .from("help_documents")
+          .select("id, linked_doc_id")
+          .in("id", idsNeedingLinkFallback);
+
+        if (existingError) throw new Error(`查询已有文档关联失败: ${existingError.message}`);
+        for (const existingDoc of existingDocs || []) {
+          existingLinkById.set(existingDoc.id as string, existingDoc.linked_doc_id);
+        }
+      }
+
+      const rows = docs.map((doc) => buildHelpDocumentRow(doc, existingLinkById.get(doc.id as string)));
 
       const { data, error } = await client
         .from("help_documents")
@@ -74,7 +105,8 @@ export async function POST(request: NextRequest) {
     }
 
     // 单条创建
-    const { id, title, category, last_updated, content, source_url, html_content, language, linked_doc_id, linked_doc_ids } = body as {
+    const requestDoc = body as Record<string, unknown>;
+    const { id, title, category, last_updated, content, source_url, html_content, language } = requestDoc as {
       id: string;
       title: string;
       category?: string;
@@ -83,18 +115,30 @@ export async function POST(request: NextRequest) {
       source_url?: string;
       html_content?: string;
       language?: string;
-      linked_doc_id?: string | string[] | null;
-      linked_doc_ids?: string[] | null;
     };
 
     if (!id || !title || !content) {
       return NextResponse.json({ error: "缺少必填字段: id, title, content" }, { status: 400 });
     }
 
+    let existingLinkedDocId: unknown;
+    if (!hasLinkedDocPayload(requestDoc)) {
+      const { data: existingDoc, error: existingError } = await client
+        .from("help_documents")
+        .select("linked_doc_id")
+        .eq("id", id)
+        .maybeSingle();
+
+      if (existingError) throw new Error(`查询已有文档关联失败: ${existingError.message}`);
+      existingLinkedDocId = existingDoc?.linked_doc_id;
+    }
+
+
     const { data, error } = await client
       .from("help_documents")
       .upsert(
-        {
+        buildHelpDocumentRow({
+          ...requestDoc,
           id,
           title,
           category: category || "未分类",
@@ -103,13 +147,12 @@ export async function POST(request: NextRequest) {
           source_url: source_url || null,
           html_content: html_content || null,
           language: language || "unknown",
-          linked_doc_id: serializeLinkedDocIds(linked_doc_ids ?? linked_doc_id),
-        },
+        }, existingLinkedDocId),
         { onConflict: "id" }
       )
       .select("id, title, category, last_updated, content, html_content, language, source_url, linked_doc_id");
-
-    if (error) throw new Error(`创建文档失败: ${error.message}`);
+    
+      if (error) throw new Error(`创建文档失败: ${error.message}`);
     return NextResponse.json({ document: data[0] });
   } catch (err) {
     const message = err instanceof Error ? err.message : "未知错误";
