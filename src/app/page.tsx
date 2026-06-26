@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, type ChangeEvent, type ReactNode } from "react";
+import { useState, useCallback, useEffect, type ChangeEvent, type ClipboardEvent, type ReactNode } from "react";
 import {
   Sheet,
   SheetContent,
@@ -496,6 +496,37 @@ function normalizeDiffForDisplay(diff?: string) {
     .replace(/https?:\/\/help\.dicloak\.com\/wp-content\/uploads\/[^\s)]+/g, "[图片占位符：相关界面截图]");
 }
 
+function getDiffLineDisplayParts(line: string) {
+  const isDelete = line.startsWith("-") && !line.startsWith("---");
+  const isAdd = line.startsWith("+") && !line.startsWith("+++");
+  const isHeader = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@");
+  const hasDiffMarker = isDelete || isAdd;
+  const displayLine = hasDiffMarker || (!isHeader && line.startsWith(" ")) ? line.slice(1) : line;
+
+  return {
+    displayLine,
+    isAdd,
+    isDelete,
+    isHeader,
+    marker: isAdd ? "+" : isDelete ? "-" : "",
+  };
+}
+
+function handleDiffCopy(event: ClipboardEvent<HTMLDivElement>) {
+  const selection = window.getSelection();
+  const selectedText = selection?.toString();
+
+  if (!selectedText?.trim()) return;
+
+  const plainMarkdown = selectedText.replace(/ /g, " ");
+  event.preventDefault();
+  event.clipboardData.setData("text/plain", plainMarkdown);
+  event.clipboardData.setData(
+    "text/html",
+    `<div style="white-space: pre-wrap;">${escapeHtml(plainMarkdown).replace(/\n/g, "<br>")}</div>`
+  );
+}
+
 function renderUnifiedDiff(diff?: string) {
   const normalizedDiff = normalizeDiffForDisplay(diff);
 
@@ -508,16 +539,17 @@ function renderUnifiedDiff(diff?: string) {
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border border-stone-200 bg-white font-mono text-sm shadow-sm">
+    <div
+      className="overflow-hidden rounded-lg border border-stone-200 bg-white text-sm shadow-sm"
+      onCopy={handleDiffCopy}
+    >
       {normalizedDiff.split("\n").map((line, index) => {
-        const isDelete = line.startsWith("-") && !line.startsWith("---");
-        const isAdd = line.startsWith("+") && !line.startsWith("+++");
-        const isHeader = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@");
+        const { displayLine, isAdd, isDelete, isHeader, marker } = getDiffLineDisplayParts(line);
 
         return (
           <div
             key={`${index}-${line}`}
-            className={`grid grid-cols-[56px_minmax(0,1fr)] border-b border-stone-100 last:border-b-0 ${
+            className={`grid grid-cols-[56px_28px_minmax(0,1fr)] border-b border-stone-100 last:border-b-0 ${
               isDelete
                 ? "bg-red-50 text-red-900"
                 : isAdd
@@ -527,12 +559,14 @@ function renderUnifiedDiff(diff?: string) {
                     : "bg-white text-stone-700"
             }`}
           >
-            <span className="select-none border-r border-stone-200 px-3 py-1.5 text-right text-xs text-stone-400">
-              {index + 1}
+            <span className="select-none border-r border-stone-200 px-3 py-1.5 text-right font-mono text-xs text-stone-400">
             </span>
-            <pre className="min-w-0 overflow-x-auto whitespace-pre-wrap px-3 py-1.5 leading-6">
-              {line || " "}
-            </pre>
+            <span className="select-none px-2 py-1.5 text-center font-mono text-xs font-semibold text-stone-400">
+              {marker}
+            </span>
+            <div className="min-w-0 overflow-x-auto whitespace-pre-wrap px-3 py-1.5 font-sans leading-6">
+              {displayLine || " "}
+            </div>
           </div>
         );
       })}
