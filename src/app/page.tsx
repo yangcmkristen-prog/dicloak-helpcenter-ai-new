@@ -1832,8 +1832,8 @@ export default function HomePage() {
 
             {/* Results */}
             {affectedDocs.length > 0 && !analyzing && (
-              <section className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
-                <div className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
+              <section className="grid min-w-0 gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
+                <div className="min-w-0 rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
                   <h2 className="mb-3 text-base font-semibold text-stone-900">
                     AI 建议修改的文档
                   </h2>
@@ -1850,13 +1850,13 @@ export default function HomePage() {
                           type="button"
                           onClick={() => setSelectedAffectedDocId(doc.docId)}
                           className={[
-                            "rounded-lg border p-3 text-left transition-colors",
+                            "w-full min-w-0 overflow-hidden rounded-lg border p-3 text-left transition-colors",
                             isSelected ? "border-teal-300 bg-teal-50" : "border-stone-200 bg-white hover:border-teal-200 hover:bg-teal-50/40",
                           ].join(" ")}
                         >
-                          <div className="mb-1 flex items-center gap-2">
+                          <div className="mb-1 flex min-w-0 items-center gap-2">
                             <FileText className="h-4 w-4 shrink-0 text-stone-400" />
-                            <span className="min-w-0 flex-1 truncate text-sm font-medium text-stone-900">
+                            <span className="line-clamp-2 min-w-0 flex-1 break-words text-sm font-medium text-stone-900">
                               {doc.docName}
                             </span>
                             {doc.language && (
@@ -1865,7 +1865,7 @@ export default function HomePage() {
                               </Badge>
                             )}
                           </div>
-                          <p className="line-clamp-2 text-xs text-stone-500">
+                          <p className="line-clamp-2 min-w-0 break-words text-xs text-stone-500">
                             {doc.reason}
                           </p>
                           <div className="mt-2 flex items-center gap-2">
@@ -1886,40 +1886,40 @@ export default function HomePage() {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
+                <div className="min-w-0 rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
                   {(() => {
                     const selectedDoc = affectedDocs.find((doc) => doc.docId === (selectedAffectedDocId ?? affectedDocs[0]?.docId)) ?? affectedDocs[0];
                     const originalDoc = helpDocs.find((doc) => doc.id === selectedDoc.docId);
 
                     return (
-                      <div className="grid gap-4">
+                      <div className="grid min-w-0 gap-4">
                         <div>
-                          <div className="mb-2 flex items-center justify-between gap-3">
-                            <div>
-                              <h2 className="text-base font-semibold text-stone-900">
+                          <div className="mb-2 flex min-w-0 items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <h2 className="break-words text-base font-semibold text-stone-900">
                                 {selectedDoc.docName}
                               </h2>
-                              <p className="mt-1 text-xs text-stone-500">
+                              <p className="mt-1 break-words text-xs text-stone-500">
                                 {selectedDoc.reason}
                               </p>
                             </div>
                             {selectedDoc.language && (
-                              <Badge variant="secondary">
+                              <Badge variant="secondary" className="shrink-0">
                                 {selectedDoc.language === "zh" ? "中文" : selectedDoc.language === "en" ? "English" : "未知"}
                               </Badge>
                             )}
                           </div>
 
-                          <div className="grid gap-2 rounded-lg border border-stone-200 bg-stone-50 p-3 text-sm text-stone-700">
-                            <div>
+                          <div className="grid min-w-0 gap-2 rounded-lg border border-stone-200 bg-stone-50 p-3 text-sm text-stone-700">
+                            <div className="min-w-0 break-words">
                               <span className="font-medium text-stone-900">建议插入位置：</span>
                               {selectedDoc.insertPosition || "未指定"}
                             </div>
-                            <div>
+                            <div className="min-w-0 break-words">
                               <span className="font-medium text-stone-900">建议删除内容：</span>
                               {selectedDoc.deleteSummary || "无"}
                             </div>
-                            <div>
+                            <div className="min-w-0 break-words">
                               <span className="font-medium text-stone-900">建议新增内容：</span>
                               {selectedDoc.addSummary || "无"}
                             </div>
