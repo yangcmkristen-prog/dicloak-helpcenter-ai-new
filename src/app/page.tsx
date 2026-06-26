@@ -512,19 +512,32 @@ function getDiffLineDisplayParts(line: string) {
   };
 }
 
+function getSelectedDiffMarkdown(container: HTMLDivElement, selection: Selection) {
+  if (selection.rangeCount === 0) return "";
+
+  const range = selection.getRangeAt(0);
+  const selectedLines = Array.from(container.querySelectorAll<HTMLElement>("[data-diff-content]"))
+    .filter((element) => range.intersectsNode(element))
+    .map((element) => element.dataset.diffContent ?? "");
+
+  if (selectedLines.length > 0) {
+    return selectedLines.join("\n").replace(/ /g, " ");
+  }
+
+  return selection.toString().replace(/ /g, " ");
+}
+
 function handleDiffCopy(event: ClipboardEvent<HTMLDivElement>) {
   const selection = window.getSelection();
-  const selectedText = selection?.toString();
 
-  if (!selectedText?.trim()) return;
+  if (!selection || selection.isCollapsed) return;
 
-  const plainMarkdown = selectedText.replace(/ /g, " ");
+  const plainMarkdown = getSelectedDiffMarkdown(event.currentTarget, selection);
+  if (!plainMarkdown.trim()) return;
+
   event.preventDefault();
   event.clipboardData.setData("text/plain", plainMarkdown);
-  event.clipboardData.setData(
-    "text/html",
-    `<div style="white-space: pre-wrap;">${escapeHtml(plainMarkdown).replace(/\n/g, "<br>")}</div>`
-  );
+  event.clipboardData.setData("text/markdown", plainMarkdown);
 }
 
 function renderUnifiedDiff(diff?: string) {
@@ -560,11 +573,15 @@ function renderUnifiedDiff(diff?: string) {
             }`}
           >
             <span className="select-none border-r border-stone-200 px-3 py-1.5 text-right font-mono text-xs text-stone-400">
+              {index + 1}
             </span>
             <span className="select-none px-2 py-1.5 text-center font-mono text-xs font-semibold text-stone-400">
               {marker}
             </span>
-            <div className="min-w-0 overflow-x-auto whitespace-pre-wrap px-3 py-1.5 font-sans leading-6">
+            <div
+              className="min-w-0 overflow-x-auto whitespace-pre-wrap px-3 py-1.5 font-sans leading-6"
+              data-diff-content={displayLine}
+            >
               {displayLine || " "}
             </div>
           </div>
