@@ -2,6 +2,14 @@
 
 import { useState, useCallback, useEffect, type ChangeEvent, type ClipboardEvent, type ReactNode } from "react";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Sheet,
   SheetContent,
   SheetHeader,
@@ -24,6 +32,9 @@ import {
   FileUp,
   CheckCircle2,
   History,
+  Edit3,
+  RefreshCw,
+  MessageSquareText,
   Image as ImageIcon,
   X,
   Link as LinkIcon,
@@ -103,6 +114,8 @@ interface AnalyzeImageAttachment {
 interface AnalysisHistoryRecord {
   id: string;
   feature: string;
+  instruction?: string;
+  editedDocIds?: string[];
   createdAt: string;
   model: AnalyzeModel;
   imageNames: string[];
@@ -181,6 +194,8 @@ function normalizeAnalysisHistoryRecord(rawRecord: unknown): AnalysisHistoryReco
     feature,
     createdAt,
     model,
+    instruction: getStringField(record.instruction),
+    editedDocIds: Array.isArray(record.editedDocIds) ? record.editedDocIds.filter((id): id is string => typeof id === "string") : [],
     imageNames: Array.isArray(record.imageNames) ? record.imageNames.filter((name): name is string => typeof name === "string") : [],
     affectedDocs: Array.isArray(record.affectedDocs) ? (record.affectedDocs as AffectedDoc[]) : [],
     suggestedNewDocs: Array.isArray(record.suggestedNewDocs) ? (record.suggestedNewDocs as SuggestedNewDoc[]) : [],
@@ -621,6 +636,10 @@ export default function HomePage() {
   const [analyzeImages, setAnalyzeImages] = useState<AnalyzeImageAttachment[]>([]);
   const [analysisHistory, setAnalysisHistory] = useState<AnalysisHistoryRecord[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [revisionInstruction, setRevisionInstruction] = useState("");
+  const [revisionDialogOpen, setRevisionDialogOpen] = useState(false);
+  const [editingAffectedDocs, setEditingAffectedDocs] = useState(false);
+  const [editedAffectedContents, setEditedAffectedContents] = useState<Record<string, string>>({});
 
   const [syncing, setSyncing] = useState(false);
 
@@ -1082,12 +1101,99 @@ export default function HomePage() {
     setStreamingText("");
     setError(null);
     setActiveTab("analyze");
+    setRevisionInstruction(record.instruction ?? "");
+    setEditingAffectedDocs(false);
+    setEditedAffectedContents({});
     setHistoryOpen(false);
   }, []);
 
   const clearAnalysisHistory = useCallback(() => {
     persistAnalysisHistory([]);
   }, [persistAnalysisHistory]);
+
+  const getAffectedDocKey = useCallback((doc: Pick<AffectedDoc, "docId" | "language">) => `${doc.docId}::${doc.language ?? "unknown"}`, []);
+
+  const buildEditableContent = useCallback((doc: AffectedDoc) => {
+    const originalDoc = helpDocs.find((helpDoc) => helpDoc.id === doc.docId);
+    return originalDoc?.content || normalizeDiffForDisplay(doc.unifiedDiff);
+  }, [helpDocs]);
+
+  const handleEnableAffectedDocEditing = useCallback(() => {
+    setEditedAffectedContents((currentContents) => {
+      const nextContents = { ...currentContents };
+      for (const doc of affectedDocs) {
+        const key = getAffectedDocKey(doc);
+        if (!(key in nextContents)) {
+          nextContents[key] = buildEditableContent(doc);
+        }
+      }
+      return nextContents;
+    });
+    setEditingAffectedDocs(true);
+  }, [affectedDocs, buildEditableContent, getAffectedDocKey]);
+
+  const parseAnalyzeStream = useCallback(async (response: Response) => {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("无法读取响应流");
+
+    const decoder = new TextDecoder();
+    let fullText = "";
+    let latestRetrievalStats: RetrievalStats | null = null;
+    let nextAffectedDocs: AffectedDoc[] = [];
+    let nextNewDocs: SuggestedNewDoc[] = [];
+    let pendingChunk = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      pendingChunk += decoder.decode(value, { stream: true });
+      const lines = pendingChunk.split("\n");
+      pendingChunk = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+
+        const data = JSON.parse(line.slice(6)) as {
+          error?: string;
+          done?: boolean;
+          content?: string;
+          retrieval?: RetrievalStats;
+        };
+
+        if (data.retrieval) {
+          latestRetrievalStats = data.retrieval;
+          setRetrievalStats(data.retrieval);
+        }
+        if (data.error) throw new Error(data.error);
+        if (data.content) {
+          fullText += data.content;
+          setStreamingText(fullText);
+        }
+        if (data.done) {
+          let jsonStr = fullText.trim();
+          const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+          if (jsonMatch) jsonStr = jsonMatch[1].trim();
+
+          const braceStart = jsonStr.indexOf("{");
+          const braceEnd = jsonStr.lastIndexOf("}");
+          if (braceStart !== -1 && braceEnd > braceStart) {
+            jsonStr = jsonStr.substring(braceStart, braceEnd + 1);
+          }
+
+          const result = JSON.parse(jsonStr) as {
+            affectedDocs?: AffectedDoc[];
+            newDocs?: SuggestedNewDoc[];
+          };
+
+          nextAffectedDocs = Array.isArray(result.affectedDocs) ? result.affectedDocs : [];
+          nextNewDocs = Array.isArray(result.newDocs) ? result.newDocs : [];
+        }
+      }
+    }
+
+    return { nextAffectedDocs, nextNewDocs, latestRetrievalStats };
+  }, []);
 
   const handleAnalyze = useCallback(async () => {
     const trimmedFeature = feature.trim();
@@ -1136,89 +1242,26 @@ export default function HomePage() {
         throw new Error(message);
       }
 
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error("无法读取响应流");
+      const { nextAffectedDocs, nextNewDocs, latestRetrievalStats } = await parseAnalyzeStream(response);
 
-      const decoder = new TextDecoder();
-      let fullText = "";
-      let latestRetrievalStats: RetrievalStats | null = null;
+      setAffectedDocs(nextAffectedDocs);
+      setSuggestedNewDocs(nextNewDocs);
+      setSelectedAffectedDocId(nextAffectedDocs[0]?.docId ?? null);
+      setActiveTab("analyze");
+      setEditingAffectedDocs(false);
+      setEditedAffectedContents({});
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(line.slice(6)) as {
-                error?: string;
-                done?: boolean;
-                content?: string;
-                retrieval?: RetrievalStats;
-              };
-              if (data.retrieval) {
-                latestRetrievalStats = data.retrieval;
-                setRetrievalStats(data.retrieval);
-              }
-              if (data.error) {
-                setError(data.error);
-                break;
-              }
-              if (data.done) {
-                try {
-                  let jsonStr = fullText.trim();
-                  const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-                  if (jsonMatch) {
-                    jsonStr = jsonMatch[1].trim();
-                  }
-
-                  const braceStart = jsonStr.indexOf("{");
-                  const braceEnd = jsonStr.lastIndexOf("}");
-                  if (braceStart !== -1 && braceEnd > braceStart) {
-                    jsonStr = jsonStr.substring(braceStart, braceEnd + 1);
-                  }
-
-                  const result = JSON.parse(jsonStr) as {
-                    affectedDocs?: AffectedDoc[];
-                    newDocs?: SuggestedNewDoc[];
-                  };
-
-                  const nextAffectedDocs = Array.isArray(result.affectedDocs) ? result.affectedDocs : [];
-                  const nextNewDocs = Array.isArray(result.newDocs) ? result.newDocs : [];
-
-                  setAffectedDocs(nextAffectedDocs);
-                  setSuggestedNewDocs(nextNewDocs);
-                  setSelectedAffectedDocId(nextAffectedDocs[0]?.docId ?? null);
-                  setActiveTab("analyze");
-
-                  const nextRecord: AnalysisHistoryRecord = {
-                    id: crypto.randomUUID(),
-                    feature: trimmedFeature,
-                    createdAt: new Date().toISOString(),
-                    model: analyzeModel,
-                    imageNames: analyzeImages.map((image) => image.name),
-                    affectedDocs: nextAffectedDocs,
-                    suggestedNewDocs: nextNewDocs,
-                    retrievalStats: latestRetrievalStats,
-                  };
-                  persistAnalysisHistory([nextRecord, ...analysisHistory].slice(0, MAX_ANALYSIS_HISTORY));
-                } catch {
-                  setError("AI 返回格式异常，请重试");
-                }
-              }
-              if (data.content) {
-                fullText += data.content;
-                setStreamingText(fullText);
-              }
-            } catch {
-              // Ignore parse errors for individual chunks
-            }
-          }
-        }
-      }
+      const nextRecord: AnalysisHistoryRecord = {
+        id: crypto.randomUUID(),
+        feature: trimmedFeature,
+        createdAt: new Date().toISOString(),
+        model: analyzeModel,
+        imageNames: analyzeImages.map((image) => image.name),
+        affectedDocs: nextAffectedDocs,
+        suggestedNewDocs: nextNewDocs,
+        retrievalStats: latestRetrievalStats,
+      };
+      persistAnalysisHistory([nextRecord, ...analysisHistory].slice(0, MAX_ANALYSIS_HISTORY));
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "分析过程出错，请重试"
@@ -1226,7 +1269,80 @@ export default function HomePage() {
     } finally {
       setAnalyzing(false);
     }
-  }, [feature, analyzeImages, helpDocs, analyzeModel, persistAnalysisHistory, analysisHistory]);
+  }, [feature, analyzeImages, helpDocs, analyzeModel, parseAnalyzeStream, persistAnalysisHistory, analysisHistory]);
+
+
+  const handleRegenerate = useCallback(async () => {
+    if (affectedDocs.length === 0) return;
+
+    const editedDocuments = affectedDocs.flatMap((doc) => {
+      const originalDoc = helpDocs.find((helpDoc) => helpDoc.id === doc.docId);
+      if (!originalDoc) return [];
+      const key = getAffectedDocKey(doc);
+      return [{
+        ...originalDoc,
+        content: editedAffectedContents[key] ?? originalDoc.content,
+        htmlContent: undefined,
+      }];
+    });
+
+    if (editedDocuments.length === 0) {
+      setError("未找到可重新生成的已影响文档，请先完成一次分析");
+      return;
+    }
+
+    const trimmedInstruction = revisionInstruction.trim();
+    const regenerateFeature = trimmedInstruction
+      ? `${feature.trim() || "基于当前已编辑文档重新生成帮助中心修改建议"}\n\n用户补充的修改建议：${trimmedInstruction}\n\n请基于已编辑文档内容重新生成最新 AI 建议 diff。`
+      : `${feature.trim() || "基于当前已编辑文档重新生成帮助中心修改建议"}\n\n修改建议为空：请基于已编辑文档内容重新生成其他语言版本，并确保同一关联文档的中英文内容语义、术语、入口、按钮、字段保持一致。`;
+
+    setAnalyzing(true);
+    setStreamingText("");
+    setRetrievalStats(null);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          feature: regenerateFeature,
+          documents: editedDocuments,
+          model: analyzeModel,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(typeof data.error === "string" ? data.error : "重新生成失败");
+      }
+
+      const { nextAffectedDocs, nextNewDocs, latestRetrievalStats } = await parseAnalyzeStream(response);
+      setAffectedDocs(nextAffectedDocs);
+      setSuggestedNewDocs(nextNewDocs);
+      setSelectedAffectedDocId(nextAffectedDocs[0]?.docId ?? null);
+      setEditingAffectedDocs(false);
+      setEditedAffectedContents({});
+
+      const nextRecord: AnalysisHistoryRecord = {
+        id: crypto.randomUUID(),
+        feature: feature.trim(),
+        instruction: trimmedInstruction || "修改建议为空：基于已编辑内容重新生成其他语言版本",
+        editedDocIds: editedDocuments.map((doc) => doc.id),
+        createdAt: new Date().toISOString(),
+        model: analyzeModel,
+        imageNames: [],
+        affectedDocs: nextAffectedDocs,
+        suggestedNewDocs: nextNewDocs,
+        retrievalStats: latestRetrievalStats,
+      };
+      persistAnalysisHistory([nextRecord, ...analysisHistory].slice(0, MAX_ANALYSIS_HISTORY));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "重新生成过程出错，请重试");
+    } finally {
+      setAnalyzing(false);
+    }
+  }, [affectedDocs, helpDocs, getAffectedDocKey, editedAffectedContents, revisionInstruction, feature, analyzeModel, parseAnalyzeStream, persistAnalysisHistory, analysisHistory]);
 
   const totalCharacters = helpDocs.reduce((sum, doc) => sum + doc.content.length, 0);
   const normalizedDocSearch = docSearch.trim().toLowerCase();
@@ -1834,9 +1950,31 @@ export default function HomePage() {
             {affectedDocs.length > 0 && !analyzing && (
               <section className="grid min-w-0 gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
                 <div className="min-w-0 rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
-                  <h2 className="mb-3 text-base font-semibold text-stone-900">
-                    AI 建议修改的文档
-                  </h2>
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="text-base font-semibold text-stone-900">
+                      AI 建议修改的文档
+                    </h2>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={() => setRevisionDialogOpen(true)}>
+                        <MessageSquareText className="mr-1.5 h-3.5 w-3.5" />
+                        修改建议
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={handleEnableAffectedDocEditing}>
+                        <Edit3 className="mr-1.5 h-3.5 w-3.5" />
+                        修改内容
+                      </Button>
+                      <Button type="button" size="sm" className="h-8 bg-teal-600 text-xs hover:bg-teal-700" onClick={handleRegenerate} disabled={analyzing}>
+                        {analyzing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
+                        重新生成
+                      </Button>
+                    </div>
+                  </div>
+
+                  {revisionInstruction.trim() && (
+                    <div className="mb-3 rounded-lg border border-blue-100 bg-blue-50 p-2 text-xs leading-5 text-blue-700">
+                      当前修改建议：{revisionInstruction.trim()}
+                    </div>
+                  )}
 
                   <div className="grid gap-2">
                     {affectedDocs.map((doc) => {
@@ -1925,6 +2063,26 @@ export default function HomePage() {
                             </div>
                           </div>
                         </div>
+
+                        {editingAffectedDocs && (
+                          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                            <div className="mb-2 flex items-center justify-between gap-2">
+                              <h3 className="text-sm font-semibold text-amber-900">已编辑内容</h3>
+                              <Badge variant="outline" className="bg-white text-xs text-amber-700">可直接修改后重新生成</Badge>
+                            </div>
+                            <Textarea
+                              value={editedAffectedContents[getAffectedDocKey(selectedDoc)] ?? buildEditableContent(selectedDoc)}
+                              onChange={(event) => {
+                                const key = getAffectedDocKey(selectedDoc);
+                                setEditedAffectedContents((currentContents) => ({
+                                  ...currentContents,
+                                  [key]: event.target.value,
+                                }));
+                              }}
+                              className="min-h-[260px] bg-white font-mono text-xs leading-5"
+                            />
+                          </div>
+                        )}
 
                         <div>
                           <div className="mb-3 flex items-center justify-between gap-3">
@@ -2178,6 +2336,27 @@ export default function HomePage() {
         </SheetContent>
       </Sheet>
 
+      <Dialog open={revisionDialogOpen} onOpenChange={setRevisionDialogOpen}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>填写修改建议</DialogTitle>
+            <DialogDescription>
+              重新生成时，AI 会结合这里的建议，并基于「修改内容」中的已编辑文本输出新的 diff；留空则优先生成关联文档的其他语言一致版本。
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={revisionInstruction}
+            onChange={(event) => setRevisionInstruction(event.target.value)}
+            placeholder="例如：步骤说明更口语化；补充注意事项；英文版需使用 Settings / Team Workspace 等固定术语..."
+            className="min-h-[160px] resize-none"
+          />
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setRevisionInstruction("")}>清空</Button>
+            <Button type="button" className="bg-teal-600 hover:bg-teal-700" onClick={() => setRevisionDialogOpen(false)}>保存建议</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Analysis History Drawer */}
       <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
         <SheetContent
@@ -2243,6 +2422,11 @@ export default function HomePage() {
                         <span className="rounded-full bg-stone-100 px-2 py-1 text-stone-600">
                           新增建议 {record.suggestedNewDocs.length} 篇
                         </span>
+                        {record.editedDocIds && record.editedDocIds.length > 0 && (
+                          <span className="rounded-full bg-purple-50 px-2 py-1 text-purple-700">
+                            重新生成 {record.editedDocIds.length} 篇
+                          </span>
+                        )}
                         {record.imageNames.length > 0 && (
                           <span className="rounded-full bg-blue-50 px-2 py-1 text-blue-700">
                             截图 {record.imageNames.length} 张
@@ -2254,6 +2438,12 @@ export default function HomePage() {
                           </span>
                         )}
                       </div>
+
+                      {record.instruction && (
+                        <p className="mt-3 line-clamp-2 text-xs text-blue-600">
+                          修改建议：{record.instruction}
+                        </p>
+                      )}
 
                       {record.affectedDocs.length > 0 && (
                         <p className="mt-3 line-clamp-2 text-xs text-stone-500">
