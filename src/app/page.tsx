@@ -368,6 +368,41 @@ function markdownToRichHtml(markdown: string) {
   return htmlLines.join("\n");
 }
 
+function richHtmlToMarkdown(htmlContent: string) {
+  const parser = new DOMParser();
+  const documentContent = parser.parseFromString(htmlContent, "text/html");
+
+  const renderNode = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return node.textContent ?? "";
+    }
+
+    if (!(node instanceof HTMLElement)) return "";
+
+    const children = Array.from(node.childNodes).map(renderNode).join("");
+    const tagName = node.tagName.toLowerCase();
+
+    if (tagName === "strong" || tagName === "b") return `**${children}**`;
+    if (tagName === "em" || tagName === "i") return `*${children}*`;
+    if (tagName === "br") return "\n";
+    if (/^h[1-4]$/.test(tagName)) return `${"#".repeat(Number(tagName[1]))} ${children.trim()}\n\n`;
+    if (tagName === "li") return `- ${children.trim()}\n`;
+    if (tagName === "p" || tagName === "div") return `${children.trim()}\n\n`;
+    if (tagName === "ul" || tagName === "ol") return `${children.trim()}\n\n`;
+
+    return children;
+  };
+
+  return Array.from(documentContent.body.childNodes)
+    .map(renderNode)
+    .join("")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function runRichTextCommand(command: string, value?: string) {
+  document.execCommand(command, false, value);
+}
 async function copyMarkdownAsRichText(markdown: string) {
   const html = markdownToRichHtml(markdown);
 
@@ -1115,7 +1150,7 @@ export default function HomePage() {
 
   const buildEditableContent = useCallback((doc: AffectedDoc) => {
     const originalDoc = helpDocs.find((helpDoc) => helpDoc.id === doc.docId);
-    return originalDoc?.content || normalizeDiffForDisplay(doc.unifiedDiff);
+    return markdownToRichHtml(originalDoc?.content || normalizeDiffForDisplay(doc.unifiedDiff));
   }, [helpDocs]);
 
   const handleEnableAffectedDocEditing = useCallback(() => {
@@ -1281,7 +1316,7 @@ export default function HomePage() {
       const key = getAffectedDocKey(doc);
       return [{
         ...originalDoc,
-        content: editedAffectedContents[key] ?? originalDoc.content,
+        content: editedAffectedContents[key] ? richHtmlToMarkdown(editedAffectedContents[key]) : originalDoc.content,
         htmlContent: undefined,
       }];
     });
@@ -2067,19 +2102,28 @@ export default function HomePage() {
                         {editingAffectedDocs && (
                           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
                             <div className="mb-2 flex items-center justify-between gap-2">
-                              <h3 className="text-sm font-semibold text-amber-900">已编辑内容</h3>
+                              <h3 className="text-sm font-semibold text-amber-900">编辑内容</h3>
                               <Badge variant="outline" className="bg-white text-xs text-amber-700">可直接修改后重新生成</Badge>
                             </div>
-                            <Textarea
-                              value={editedAffectedContents[getAffectedDocKey(selectedDoc)] ?? buildEditableContent(selectedDoc)}
-                              onChange={(event) => {
+                            <div className="mb-2 flex flex-wrap gap-1 rounded-md border border-amber-100 bg-white p-1.5">
+                              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onMouseDown={(event) => event.preventDefault()} onClick={() => runRichTextCommand("bold")}>加粗</Button>
+                              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onMouseDown={(event) => event.preventDefault()} onClick={() => runRichTextCommand("formatBlock", "h2")}>标题</Button>
+                              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onMouseDown={(event) => event.preventDefault()} onClick={() => runRichTextCommand("insertUnorderedList")}>列表</Button>
+                              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onMouseDown={(event) => event.preventDefault()} onClick={() => runRichTextCommand("formatBlock", "p")}>正文</Button>
+                            </div>
+                            <div
+                              key={getAffectedDocKey(selectedDoc)}
+                              contentEditable
+                              suppressContentEditableWarning
+                              onInput={(event) => {
                                 const key = getAffectedDocKey(selectedDoc);
                                 setEditedAffectedContents((currentContents) => ({
                                   ...currentContents,
-                                  [key]: event.target.value,
+                                  [key]: event.currentTarget.innerHTML,
                                 }));
                               }}
-                              className="min-h-[260px] bg-white font-mono text-xs leading-5"
+                              className="min-h-[360px] overflow-auto rounded-md border border-stone-200 bg-white p-4 text-sm leading-7 text-stone-700 outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-100 [&_h1]:mb-4 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:mb-3 [&_h2]:mt-5 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mb-2 [&_h3]:mt-4 [&_h3]:text-base [&_h3]:font-semibold [&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-3 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-6"
+                              dangerouslySetInnerHTML={{ __html: editedAffectedContents[getAffectedDocKey(selectedDoc)] ?? buildEditableContent(selectedDoc) }}
                             />
                           </div>
                         )}
