@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, type ChangeEvent, type ClipboardEvent, type ReactNode } from "react";
+import { useState, useCallback, useEffect, useRef, type ChangeEvent, type ClipboardEvent, type ReactNode } from "react";
 import {
   Dialog,
   DialogContent,
@@ -400,8 +400,52 @@ function richHtmlToMarkdown(htmlContent: string) {
     .trim();
 }
 
-function runRichTextCommand(command: string, value?: string) {
-  document.execCommand(command, false, value);
+interface RichTextEditorProps {
+  initialHtml: string;
+  onChange: (html: string) => void;
+}
+
+function RichTextEditor({ initialHtml, onChange }: RichTextEditorProps) {
+  const editorRef = useRef<HTMLDivElement>(null);
+  const initialHtmlRef = useRef(initialHtml);
+
+  useEffect(() => {
+    if (editorRef.current) {
+      editorRef.current.innerHTML = initialHtmlRef.current;
+    }
+  }, []);
+
+  const runCommand = (command: string, value?: string) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    editor.focus();
+    document.execCommand(command, false, value);
+    onChange(editor.innerHTML);
+  };
+
+  const toolbarButtonProps = (command: string, value?: string) => ({
+    onMouseDown: (event: React.MouseEvent<HTMLButtonElement>) => event.preventDefault(),
+    onClick: () => runCommand(command, value),
+  });
+
+  return (
+    <>
+      <div className="mb-2 flex flex-wrap gap-1 rounded-md border border-amber-100 bg-white p-1.5">
+        <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" {...toolbarButtonProps("bold")}>加粗</Button>
+        <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" {...toolbarButtonProps("formatBlock", "h2")}>标题</Button>
+        <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" {...toolbarButtonProps("insertUnorderedList")}>列表</Button>
+        <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" {...toolbarButtonProps("formatBlock", "p")}>正文</Button>
+      </div>
+      <div
+        ref={editorRef}
+        contentEditable
+        suppressContentEditableWarning
+        onInput={(event) => onChange(event.currentTarget.innerHTML)}
+        className="h-[min(60vh,640px)] min-h-[360px] overflow-y-auto overscroll-contain rounded-md border border-stone-200 bg-white p-4 text-sm leading-7 text-stone-700 outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-100 [&_h1]:mb-4 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:mb-3 [&_h2]:mt-5 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mb-2 [&_h3]:mt-4 [&_h3]:text-base [&_h3]:font-semibold [&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-3 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-6"
+      />
+    </>
+  );
 }
 async function copyMarkdownAsRichText(markdown: string) {
   const html = markdownToRichHtml(markdown);
@@ -2105,25 +2149,16 @@ export default function HomePage() {
                               <h3 className="text-sm font-semibold text-amber-900">编辑内容</h3>
                               <Badge variant="outline" className="bg-white text-xs text-amber-700">可直接修改后重新生成</Badge>
                             </div>
-                            <div className="mb-2 flex flex-wrap gap-1 rounded-md border border-amber-100 bg-white p-1.5">
-                              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onMouseDown={(event) => event.preventDefault()} onClick={() => runRichTextCommand("bold")}>加粗</Button>
-                              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onMouseDown={(event) => event.preventDefault()} onClick={() => runRichTextCommand("formatBlock", "h2")}>标题</Button>
-                              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onMouseDown={(event) => event.preventDefault()} onClick={() => runRichTextCommand("insertUnorderedList")}>列表</Button>
-                              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onMouseDown={(event) => event.preventDefault()} onClick={() => runRichTextCommand("formatBlock", "p")}>正文</Button>
-                            </div>
-                            <div
+                            <RichTextEditor
                               key={getAffectedDocKey(selectedDoc)}
-                              contentEditable
-                              suppressContentEditableWarning
-                              onInput={(event) => {
+                              initialHtml={editedAffectedContents[getAffectedDocKey(selectedDoc)] ?? buildEditableContent(selectedDoc)}
+                              onChange={(html) => {
                                 const key = getAffectedDocKey(selectedDoc);
                                 setEditedAffectedContents((currentContents) => ({
                                   ...currentContents,
-                                  [key]: event.currentTarget.innerHTML,
+                                  [key]: html,
                                 }));
                               }}
-                              className="min-h-[360px] overflow-auto rounded-md border border-stone-200 bg-white p-4 text-sm leading-7 text-stone-700 outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-100 [&_h1]:mb-4 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:mb-3 [&_h2]:mt-5 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mb-2 [&_h3]:mt-4 [&_h3]:text-base [&_h3]:font-semibold [&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-3 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-6"
-                              dangerouslySetInnerHTML={{ __html: editedAffectedContents[getAffectedDocKey(selectedDoc)] ?? buildEditableContent(selectedDoc) }}
                             />
                           </div>
                         )}
